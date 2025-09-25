@@ -24,6 +24,6 @@ pnpm-debug.log*
 Thumbs.db
 
 
-#videos 
-
+# Videos 
 uploads/
+outputs/
