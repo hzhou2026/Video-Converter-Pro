@@ -23,8 +23,11 @@ const upload = multer({
     fileSize: 100 * 1024 * 1024 // 100MB limit
   },
   fileFilter: (req, file, cb) => {
-    // Accept only video files
-    if (file.mimetype.startsWith('video/')) {
+    // Accept video files by MIME type or file extension
+    const videoExtensions = ['.mp4', '.avi', '.mov', '.mkv', '.hevc', '.h265', '.webm', '.flv', '.wmv', '.m4v', '.3gp'];
+    const fileExtension = path.extname(file.originalname).toLowerCase();
+    
+    if (file.mimetype.startsWith('video/') || videoExtensions.includes(fileExtension)) {
       cb(null, true);
     } else {
       cb(new Error('Only video files are allowed'), false);
