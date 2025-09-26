@@ -1,35 +1,60 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import { useState } from 'react';
+import VideoUploader from './components/VideoUploader';
+import ConversionOptions from './components/ConversionOptions';
+import JobsList from './components/JobsList';
+import Statistics from './components/Statistics';
+import { motion } from 'framer-motion';
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [activeJobs, setActiveJobs] = useState([]);
+  const [completedJobs, setCompletedJobs] = useState([]);
+
+  const handleNewJob = (job) => {
+    setActiveJobs(prev => [...prev, job]);
+  };
+
+  const handleJobComplete = (jobId) => {
+    const job = activeJobs.find(j => j.id === jobId);
+    if (job) {
+      setActiveJobs(prev => prev.filter(j => j.id !== jobId));
+      setCompletedJobs(prev => [...prev, { ...job, completedAt: new Date() }]);
+    }
+  };
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.jsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  )
-}
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900">
+      <div className="container mx-auto px-4 py-8">
+        <motion.header 
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="text-center mb-12"
+        >
+          <h1 className="text-5xl font-bold text-white mb-4">
+            🎬 Video Converter Pro
+          </h1>
+          <p className="text-gray-300 text-lg">
+            Advanced video conversion with real-time processing
+          </p>
+        </motion.header>
 
-export default App
+        <div className="grid lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-6">
+            <VideoUploader onJobCreated={handleNewJob} />
+            <JobsList 
+              activeJobs={activeJobs} 
+              completedJobs={completedJobs}
+              onJobComplete={handleJobComplete}
+            />
+          </div>
+          <div className="space-y-6">
+            <ConversionOptions />
+            <Statistics 
+              activeCount={activeJobs.length}
+              completedCount={completedJobs.length}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
