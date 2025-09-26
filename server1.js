@@ -126,9 +126,9 @@ const cleanupFiles = async (...filePaths) => {
     if (filePath && fsSync.existsSync(filePath)) {
       try {
         await fs.unlink(filePath);
-        console.log('Eliminado:', filePath);
+        console.log('Cleaned up:', filePath);
       } catch (err) {
-        console.error('Error al eliminar archivo:', filePath, err);
+        console.error('Error deleting file:', filePath, err);
       }
     }
   });

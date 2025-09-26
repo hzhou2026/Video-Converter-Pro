@@ -1,29 +1,40 @@
-# dependencias
-/node_modules
+# --- Dependencias ---
+node_modules/
 
-# builds
-/dist
-/build
+# --- Builds y salidas ---
+dist/
+build/
+outputs/
+temp/
+uploads/
 
-# logs
-npm-debug.log*
-yarn-debug.log*
-pnpm-debug.log*
+# --- FFmpeg (binarios externos) ---
+FFmpeg/
 
-# entorno
+# --- Archivos de configuración local ---
 .env
 .env.local
 .env.*.local
 
-# editores
-.vscode/
-.idea/
+# --- Logs ---
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
 
-# sistema
+# --- Sistema operativo ---
 .DS_Store
 Thumbs.db
 
+# --- VSCode ---
+.vscode/
+*.code-workspace
 
-# Videos 
-uploads/
-outputs/
+# --- Coverage / tests ---
+coverage/
+*.lcov
+
+# --- Otros temporales ---
+*.cache
+*.tmp
