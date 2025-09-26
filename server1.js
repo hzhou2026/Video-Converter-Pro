@@ -10,29 +10,30 @@ const EventEmitter = require("events");
 
 const app = express();
 
-// Enable CORS for frontend integration
+// Middleware: habilita CORS y soporte para JSON
 app.use(cors());
 app.use(express.json());
 
-// Create directories if they don't exist
+// Definición de directorios de trabajo (subidas, salidas, temporales)
 const uploadsDir = "uploads";
 const outputsDir = "outputs";
 const tempDir = "temp";
 
+// Crear los directorios si no existen
 [uploadsDir, outputsDir, tempDir].forEach(dir => {
   if (!fsSync.existsSync(dir)) {
     fsSync.mkdirSync(dir, { recursive: true });
   }
 });
 
-// Store active conversion jobs
+// Almacenamiento de trabajos activos de conversión
 const activeJobs = new Map();
 
-// Job status emitter for SSE
+// Emisor de eventos para seguimiento de estado de trabajos (SSE)
 class JobEmitter extends EventEmitter {}
 const jobEmitter = new JobEmitter();
 
-// Video conversion presets
+// Presets de conversión de video predefinidos
 const PRESETS = {
   'high-quality': {
     videoCodec: 'libx264',
@@ -72,7 +73,7 @@ const PRESETS = {
   }
 };
 
-// Enhanced multer configuration
+// Configuración de almacenamiento de archivos con multer
 const storage = multer.diskStorage({
   destination: uploadsDir,
   filename: (req, file, cb) => {
@@ -81,6 +82,7 @@ const storage = multer.diskStorage({
   }
 });
 
+// Configuración de límites y filtros para archivos subidos
 const upload = multer({ 
   storage: storage,
   limits: {
@@ -96,7 +98,99 @@ const upload = multer({
         videoExtensions.includes(fileExtension)) {
       cb(null, true);
     } else {
-      cb(new Error('Only video and audio files are allowed'), false);
+      cb(new Error('Solo se permiten archivos de video y audio'), false);
     }
   }
 });
+
+// Manejo de errores de multer
+app.use((error, req, res, next) => {
+  if (error instanceof multer.MulterError) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'Archivo demasiado grande (máx 500MB)' });
+    }
+    return res.status(400).json({ error: error.message });
+  }
+
+  if (error.message === 'Solo se permiten archivos de video y audio') {
+    return res.status(400).json({ error: error.message });
+  }
+  
+  console.error('Unhandled error:', error);
+  res.status(500).json({ error: 'Error interno del servidor' });
+});
+
+// Función de limpieza de archivos temporales
+const cleanupFiles = async (...filePaths) => {
+  const cleanupPromises = filePaths.map(async (filePath) => {
+    if (filePath && fsSync.existsSync(filePath)) {
+      try {
+        await fs.unlink(filePath);
+        console.log('Eliminado:', filePath);
+      } catch (err) {
+        console.error('Error al eliminar archivo:', filePath, err);
+      }
+    }
+  });
+  
+  await Promise.all(cleanupPromises);
+};
+
+// Obtener información técnica de un archivo multimedia con ffprobe
+const getMediaInfo = (filePath) => {
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(filePath, (err, metadata) => {
+      if (err) {
+        reject(err);
+      } else {
+        const videoStream = metadata.streams.find(s => s.codec_type === 'video');
+        const audioStream = metadata.streams.find(s => s.codec_type === 'audio');
+        
+        resolve({
+          duration: metadata.format.duration,
+          size: metadata.format.size,
+          bitrate: metadata.format.bit_rate,
+          format: metadata.format.format_name,
+          video: videoStream ? {
+            codec: videoStream.codec_name,
+            width: videoStream.width,
+            height: videoStream.height,
+            fps: eval(videoStream.r_frame_rate),
+            bitrate: videoStream.bit_rate
+          } : null,
+          audio: audioStream ? {
+            codec: audioStream.codec_name,
+            channels: audioStream.channels,
+            sampleRate: audioStream.sample_rate,
+            bitrate: audioStream.bit_rate
+          } : null
+        });
+      }
+    });
+  });
+};
+
+// Formatear tamaño de archivo en unidades legibles
+const formatSize = (bytes) => {
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  if (bytes === 0) return '0 Bytes';
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
+};
+
+// Función principal para convertir video con ffmpeg y presets
+const convertVideo = async (jobId, inputPath, outputPath, options = {}) => {
+  const {
+    preset = 'balanced',
+    resolution = null,
+    format = 'mp4',
+    startTime = null,
+    duration = null,
+    removeAudio = false,
+    customOptions = []
+  } = options;
+
+  const presetConfig = PRESETS[preset] || PRESETS['balanced'];
+  const job = activeJobs.get(jobId);
+  
+  let command = ffmpeg(inputPath);
