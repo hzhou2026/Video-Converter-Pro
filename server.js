@@ -6,7 +6,7 @@ const fs = require("fs");
 
 const app = express();
 
-// Create directories if they don't exist
+// Crear carpetas si no existen
 const uploadsDir = "uploads";
 const outputsDir = "outputs";
 
@@ -16,14 +16,14 @@ const outputsDir = "outputs";
   }
 });
 
-// Configure multer with file size limit and file type validation
+// Configurar multer para manejar la subida de archivos
 const upload = multer({ 
   dest: uploadsDir,
   limits: {
-    fileSize: 100 * 1024 * 1024 // 100MB limit
+    fileSize: 100 * 1024 * 1024 // 100MB limite
   },
   fileFilter: (req, file, cb) => {
-    // Accept video files by MIME type or file extension
+    //MMimetype de video comunes
     const videoExtensions = ['.mp4', '.avi', '.mov', '.mkv', '.hevc', '.h265', '.webm', '.flv', '.wmv', '.m4v', '.3gp'];
     const fileExtension = path.extname(file.originalname).toLowerCase();
     
@@ -35,7 +35,7 @@ const upload = multer({
   }
 });
 
-// Add basic error handling middleware
+// Añadiendo middleware para manejar errores de multer
 app.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
     if (error.code === 'LIMIT_FILE_SIZE') {
@@ -50,7 +50,7 @@ app.use((error, req, res, next) => {
   next(error);
 });
 
-// Cleanup function to remove temporary files
+// Limpiar archivos temporales
 const cleanupFiles = (...filePaths) => {
   filePaths.forEach(filePath => {
     if (fs.existsSync(filePath)) {
@@ -64,7 +64,7 @@ const cleanupFiles = (...filePaths) => {
 };
 
 app.post("/upload", upload.single("video"), (req, res) => {
-  // Validate that a file was uploaded
+  // Validar archivo subido
   if (!req.file) {
     return res.status(400).json({ error: "No video file uploaded" });
   }
@@ -79,9 +79,9 @@ app.post("/upload", upload.single("video"), (req, res) => {
     .videoCodec("libaom-av1") // Use AV1 codec instead of libx264
     .size("1280x720")
     .outputOptions([
-      "-crf 30", // AV1 can use higher CRF values (30-35 is good)
-      "-preset 6", // AV1 preset (0-10, higher = faster but less efficient)
-      "-movflags +faststart" // Optimize for web streaming
+      "-crf 30", // AV1 puede usar valores más altos para buena calidad
+      "-preset 6", // AV1 preset balanceado
+      "-movflags +faststart" // Optimizar para streaming web
     ])
     .on("start", (commandLine) => {
       console.log('FFmpeg process started:', commandLine);
@@ -91,24 +91,24 @@ app.post("/upload", upload.single("video"), (req, res) => {
     })
     .on("end", () => {
       console.log(`Video conversion completed: ${outputFilename}`);
-      
-      // Send the converted file
+
+      // enviar el archivo convertido
       res.download(outputPath, outputFilename, (err) => {
         if (err) {
           console.error('Download error:', err);
         }
-        
-        // Clean up files after download (or error)
+
+        // Limpiar archivos después de la descarga (o error)
         cleanupFiles(inputPath, outputPath);
       });
     })
     .on("error", (err) => {
       console.error('FFmpeg error:', err);
-      
-      // Clean up files on error
+
+      // Limpiar archivos en caso de error
       cleanupFiles(inputPath, outputPath);
-      
-      // Send error response
+
+      // Enviar respuesta de error
       if (!res.headersSent) {
         res.status(500).json({ 
           error: "Error processing video",
@@ -119,16 +119,16 @@ app.post("/upload", upload.single("video"), (req, res) => {
     .save(outputPath);
 });
 
-// Health check endpoint
+// Comprobar estado del servidor
 app.get("/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
-// MP3 conversion endpoint
+// Conversión a MP3
 app.post("/upload-mp3", upload.single("video"), (req, res) => {
-  // Validate that a file was uploaded
+  // Validar que se haya subido un archivo
   if (!req.file) {
-    return res.status(400).json({ error: "No video file uploaded" });
+    return res.status(400).json({ error: "No se ha subido ningún archivo de video" });
   }
 
   const inputPath = req.file.path;
@@ -138,7 +138,7 @@ app.post("/upload-mp3", upload.single("video"), (req, res) => {
   console.log(`Extracting audio to MP3: ${req.file.originalname}`);
 
   ffmpeg(inputPath)
-    .noVideo() // Remove video stream
+    .noVideo() // Solo audio
     .audioCodec("mp3")
     .audioBitrate(192)
     .on("start", (commandLine) => {
@@ -149,24 +149,24 @@ app.post("/upload-mp3", upload.single("video"), (req, res) => {
     })
     .on("end", () => {
       console.log(`Audio extraction completed: ${outputFilename}`);
-      
-      // Send the converted file
+
+      // Enviar el archivo convertido
       res.download(outputPath, outputFilename, (err) => {
         if (err) {
           console.error('Download error:', err);
         }
-        
-        // Clean up files after download (or error)
+
+        // Limpiar archivos después de la descarga (o error)
         cleanupFiles(inputPath, outputPath);
       });
     })
     .on("error", (err) => {
       console.error('FFmpeg error:', err);
-      
-      // Clean up files on error
+
+      // Limpiar archivos en caso de error
       cleanupFiles(inputPath, outputPath);
-      
-      // Send error response
+
+      // Enviar respuesta de error
       if (!res.headersSent) {
         res.status(500).json({ 
           error: "Error extracting audio",
@@ -177,11 +177,11 @@ app.post("/upload-mp3", upload.single("video"), (req, res) => {
     .save(outputPath);
 });
 
-// AV1 conversion endpoint
+// AV1 conversor
 app.post("/upload-av1", upload.single("video"), (req, res) => {
-  // Validate that a file was uploaded
+  // Validar que se haya subido un archivo
   if (!req.file) {
-    return res.status(400).json({ error: "No video file uploaded" });
+    return res.status(400).json({ error: "No se ha subido ningún archivo de video" });
   }
 
   const inputPath = req.file.path;
@@ -194,8 +194,8 @@ app.post("/upload-av1", upload.single("video"), (req, res) => {
     .videoCodec("libaom-av1")
     .size("1280x720")
     .outputOptions([
-      "-crf 30", // Good quality for AV1
-      "-preset 6", // Balance between speed and efficiency
+      "-crf 30", // Buena calidad para AV1
+      "-preset 6", // Balance entre velocidad y eficiencia
       "-movflags +faststart"
     ])
     .on("start", (commandLine) => {
@@ -206,24 +206,24 @@ app.post("/upload-av1", upload.single("video"), (req, res) => {
     })
     .on("end", () => {
       console.log(`AV1 conversion completed: ${outputFilename}`);
-      
-      // Send the converted file
+
+      // Enviar el archivo convertido
       res.download(outputPath, outputFilename, (err) => {
         if (err) {
           console.error('Download error:', err);
         }
         
-        // Clean up files after download (or error)
+        // Limpiar archivos después de la descarga (o error)
         cleanupFiles(inputPath, outputPath);
       });
     })
     .on("error", (err) => {
       console.error('FFmpeg AV1 error:', err);
-      
-      // Clean up files on error
+
+      // Limpiar archivos en caso de error
       cleanupFiles(inputPath, outputPath);
-      
-      // Send error response
+
+      // Enviar respuesta de error
       if (!res.headersSent) {
         res.status(500).json({ 
           error: "Error converting to AV1",
@@ -234,15 +234,15 @@ app.post("/upload-av1", upload.single("video"), (req, res) => {
     .save(outputPath);
 });
 
-// Basic route
+// Ruta raíz
 app.get("/", (req, res) => {
   res.json({ 
     message: "Video Conversion API",
     endpoints: {
-      "POST /upload": "Upload and convert video to MP4 (AV1)",
-      "POST /upload-av1": "Upload and convert video to AV1",
-      "POST /upload-mp3": "Upload and extract audio to MP3",
-      "GET /health": "Health check"
+      "POST /upload": "Subir y convertir video a MP4 (AV1)",
+      "POST /upload-av1": "Subir y convertir video a AV1",
+      "POST /upload-mp3": "Subir y extraer audio a MP3",
+      "GET /health": "Comprobar estado del servidor"
     }
   });
 });
@@ -254,13 +254,13 @@ app.listen(PORT, () => {
   console.log(`Upload videos to http://localhost:${PORT}/upload`);
 });
 
-// Graceful shutdown
+// Cierres limpios
 process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
+  console.log('SIGTERM recibido, cerrando de manera ordenada');
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
-  console.log('SIGINT received, shutting down gracefully');
+  console.log('SIGINT recibido, cerrando de manera ordenada');
   process.exit(0);
 });
