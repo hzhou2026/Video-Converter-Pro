@@ -34,33 +34,30 @@ const jobEmitter = new JobEmitter();
 
 // Videopresets predefinidos
 const PRESETS = {
+  // H.264 Presets
   'high-quality': {
     videoCodec: 'libx264',
     audioCodec: 'aac',
     crf: 18,
     preset: 'slow',
-    audioBitrate: '256k'
+    audioBitrate: '256k',
+    description: 'Máxima calidad H.264, archivos grandes'
   },
   'balanced': {
     videoCodec: 'libx264',
     audioCodec: 'aac',
     crf: 23,
     preset: 'medium',
-    audioBitrate: '192k'
+    audioBitrate: '192k',
+    description: 'Balance óptimo calidad/tamaño'
   },
   'fast': {
     videoCodec: 'libx264',
     audioCodec: 'aac',
     crf: 28,
     preset: 'fast',
-    audioBitrate: '128k'
-  },
-  'av1': {
-    videoCodec: 'libaom-av1',
-    audioCodec: 'opus',
-    crf: 30,
-    preset: 6,
-    audioBitrate: '128k'
+    audioBitrate: '128k',
+    description: 'Conversión rápida, menor calidad'
   },
   'web-optimized': {
     videoCodec: 'libx264',
@@ -68,7 +65,167 @@ const PRESETS = {
     crf: 23,
     preset: 'medium',
     audioBitrate: '128k',
-    extraOptions: ['-movflags', '+faststart', '-profile:v', 'main', '-level', '4.0']
+    extraOptions: ['-movflags', '+faststart', '-profile:v', 'main', '-level', '4.0'],
+    description: 'Optimizado para streaming web'
+  },
+  
+  // H.265/HEVC Presets
+  'hevc-high': {
+    videoCodec: 'libx265',
+    audioCodec: 'aac',
+    crf: 20,
+    preset: 'slow',
+    audioBitrate: '256k',
+    description: 'H.265 alta calidad, mejor compresión que H.264'
+  },
+  'hevc-balanced': {
+    videoCodec: 'libx265',
+    audioCodec: 'aac',
+    crf: 25,
+    preset: 'medium',
+    audioBitrate: '192k',
+    description: 'H.265 equilibrado'
+  },
+  'hevc-fast': {
+    videoCodec: 'libx265',
+    audioCodec: 'aac',
+    crf: 28,
+    preset: 'fast',
+    audioBitrate: '128k',
+    description: 'H.265 conversión rápida'
+  },
+  
+  // AV1 Presets
+  'av1-high': {
+    videoCodec: 'libaom-av1',
+    audioCodec: 'opus',
+    crf: 25,
+    preset: 4,
+    audioBitrate: '192k',
+    description: 'AV1 alta calidad, compresión excelente, muy lento'
+  },
+  'av1-balanced': {
+    videoCodec: 'libaom-av1',
+    audioCodec: 'opus',
+    crf: 30,
+    preset: 6,
+    audioBitrate: '128k',
+    description: 'AV1 equilibrado, buena compresión'
+  },
+  'av1-fast': {
+    videoCodec: 'libaom-av1',
+    audioCodec: 'opus',
+    crf: 35,
+    preset: 8,
+    audioBitrate: '128k',
+    description: 'AV1 rápido (aunque sigue siendo lento)'
+  },
+  
+  // VP9 Presets
+  'vp9-high': {
+    videoCodec: 'libvpx-vp9',
+    audioCodec: 'opus',
+    crf: 20,
+    preset: 'good',
+    audioBitrate: '192k',
+    extraOptions: ['-row-mt', '1', '-tile-columns', '2'],
+    description: 'VP9 alta calidad, buen balance'
+  },
+  'vp9-balanced': {
+    videoCodec: 'libvpx-vp9',
+    audioCodec: 'opus',
+    crf: 31,
+    preset: 'good',
+    audioBitrate: '128k',
+    extraOptions: ['-row-mt', '1', '-tile-columns', '2'],
+    description: 'VP9 equilibrado'
+  },
+  
+  // VP8 Presets
+  'vp8-web': {
+    videoCodec: 'libvpx',
+    audioCodec: 'opus',
+    crf: 10,
+    preset: 'good',
+    audioBitrate: '128k',
+    description: 'VP8 para web (WebM)'
+  },
+  
+  // Theora Preset (libre y antiguo)
+  'theora': {
+    videoCodec: 'libtheora',
+    audioCodec: 'opus',
+    crf: 7,
+    preset: null,
+    audioBitrate: '192k',
+    description: 'Theora (formato libre, poco usado)'
+  },
+  
+  // Presets específicos por uso
+  'archive-quality': {
+    videoCodec: 'libx264',
+    audioCodec: 'flac',
+    crf: 0,
+    preset: 'veryslow',
+    audioBitrate: null,
+    extraOptions: ['-qp', '0'],
+    description: 'Archivado sin pérdida (H.264 lossless + FLAC)'
+  },
+  'social-media': {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    crf: 23,
+    preset: 'fast',
+    audioBitrate: '128k',
+    extraOptions: ['-movflags', '+faststart', '-profile:v', 'high', '-level', '4.2', '-pix_fmt', 'yuv420p'],
+    description: 'Optimizado para redes sociales (Instagram, Twitter, etc.)'
+  },
+  'youtube-1080p': {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    crf: 21,
+    preset: 'slow',
+    audioBitrate: '192k',
+    extraOptions: ['-movflags', '+faststart', '-profile:v', 'high', '-bf', '2', '-g', '30'],
+    description: 'Optimizado para YouTube 1080p'
+  },
+  'animation': {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    crf: 18,
+    preset: 'slow',
+    audioBitrate: '192k',
+    extraOptions: ['-tune', 'animation'],
+    description: 'Optimizado para contenido animado'
+  },
+  'screen-recording': {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    crf: 18,
+    preset: 'ultrafast',
+    audioBitrate: '192k',
+    extraOptions: ['-tune', 'zerolatency'],
+    description: 'Para grabaciones de pantalla'
+  },
+  
+  // Presets de baja resolución/móvil
+  'mobile-low': {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    crf: 28,
+    preset: 'veryfast',
+    audioBitrate: '96k',
+    extraOptions: ['-profile:v', 'baseline', '-level', '3.0'],
+    description: 'Móviles de gama baja, archivos pequeños'
+  },
+  'mobile-high': {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    crf: 23,
+    preset: 'medium',
+    audioBitrate: '128k',
+    extraOptions: ['-profile:v', 'main', '-level', '4.0'],
+    description: 'Móviles modernos'
   }
 };
 
@@ -324,14 +481,7 @@ app.get("/presets", (req, res) => {
 });
 
 function getPresetDescription(preset) {
-  const descriptions = {
-    'Calidad alta': 'Mejor calidad, mayor tamaño de archivo, procesamiento más lento',
-    'balanced': 'Buen equilibrio entre calidad y tamaño de archivo',
-    'fast': 'Procesamiento rápido, menor tamaño de archivo, menor calidad',
-    'av1': 'Códec AV1 moderno, excelente compresión, procesamiento lento',
-    'web-optimized': 'Optimizado para transmisión web y compatibilidad'
-  };
-  return descriptions[preset] || 'Preset personalizado';
+  return PRESETS[preset]?.description || 'Preset personalizado';
 }
 
 // Principal endpoint de conversión
