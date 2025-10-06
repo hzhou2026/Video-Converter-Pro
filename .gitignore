@@ -36,6 +36,6 @@ coverage/
 *.lcov
 
 # --- Otros temporales ---
-*.cache
+cache/
 *.tmp
 thumbnails/
