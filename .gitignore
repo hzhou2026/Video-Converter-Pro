@@ -38,4 +38,4 @@ coverage/
 # --- Otros temporales ---
 *.cache
 *.tmp
-.thumbnails/
+thumbnails/
