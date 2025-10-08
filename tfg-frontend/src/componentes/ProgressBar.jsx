@@ -1,4 +1,5 @@
 import React from 'react';
+import PropTypes from 'prop-types';
 import './ProgressBar.css';
 
 const ProgressBar = ({ job, onCancel }) => {
@@ -17,7 +18,13 @@ const ProgressBar = ({ job, onCancel }) => {
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
     const s = Math.floor(seconds % 60);
-    return h > 0 ? `${h}h ${m}m ${s}s` : m > 0 ? `${m}m ${s}s` : `${s}s`;
+    if (h > 0) {
+      return `${h}h ${m}m ${s}s`;
+    } else if (m > 0) {
+      return `${m}m ${s}s`;
+    } else {
+      return `${s}s`;
+    }
   };
 
   const formatFileSize = (bytes) => {
@@ -104,7 +111,7 @@ const ProgressBar = ({ job, onCancel }) => {
         <div className="progress-details">
           {job.currentTime && (
             <div className="detail-item">
-              <span className="detail-label">Tiempo:</span>
+              <span className="detail-label">Duración del video:</span>
               <span className="detail-value">{job.currentTime}</span>
             </div>
           )}
@@ -128,7 +135,7 @@ const ProgressBar = ({ job, onCancel }) => {
           )}
           {job.result?.processingTime && (
             <div className="detail-item">
-              <span className="detail-label">Tiempo Total:</span>
+              <span className="detail-label">Tiempo de conversión:</span>
               <span className="detail-value">
                 {formatTime(job.result.processingTime / 1000)}
               </span>
@@ -169,6 +176,25 @@ const ProgressBar = ({ job, onCancel }) => {
       )}
     </div>
   );
+};
+ProgressBar.propTypes = {
+  job: PropTypes.shape({
+    id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+    status: PropTypes.string,
+    progress: PropTypes.number,
+    inputName: PropTypes.string,
+    filename: PropTypes.string,
+    currentTime: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+    fps: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+    speed: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+    result: PropTypes.shape({
+      outputSize: PropTypes.number,
+      processingTime: PropTypes.number,
+      thumbnailPath: PropTypes.string
+    }),
+    error: PropTypes.string
+  }),
+  onCancel: PropTypes.func.isRequired
 };
 
 export default ProgressBar;
