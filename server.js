@@ -496,166 +496,6 @@ const getMediaInfo = (filePath) => {
   });
 };
 
-// Calcular métricas de calidad avanzadas
-const calculateAdvancedMetrics = async (originalPath, convertedPath) => {
-  try {
-    const metrics = await calculateQualityMetrics(originalPath, convertedPath);
-
-    // Agregar análisis de cambios de escena
-    const sceneCmd = `ffmpeg -i "${convertedPath}" -vf "select='gt(scene,0.4)',showinfo" -f null - 2>&1`;
-    const { stdout: sceneOutput } = await execPromise(sceneCmd, { maxBuffer: 10 * 1024 * 1024 });
-    const sceneChanges = (sceneOutput.match(/showinfo/g) || []).length;
-
-    return {
-      ...metrics,
-      sceneChanges,
-      averageSceneLength: metrics.duration ? metrics.duration / sceneChanges : null
-    };
-  } catch (error) {
-    logger.error('Error calculating advanced metrics:', error);
-    return null;
-  }
-};
-
-// Calcular SSIM, PSNR y VMAF
-const calculateQualityMetrics = async (originalPath, convertedPath) => {
-  try {
-    const vmafModels = [
-      '/usr/share/model/vmaf_v0.6.1.json',
-      '/usr/local/share/model/vmaf_v0.6.1.json',
-      './models/vmaf_v0.6.1.json'
-    ];
-
-    let vmafModelPath = null;
-    for (const model of vmafModels) {
-      if (fsSync.existsSync(model)) {
-        vmafModelPath = model;
-        break;
-      }
-    }
-
-    let filterComplex = '[0:v]scale2ref[scaled][ref];[scaled][ref]';
-    const metrics = ['ssim=stats_file=ssim.log', 'psnr=stats_file=psnr.log'];
-
-    if (vmafModelPath) {
-      metrics.push(`libvmaf=model_path=${vmafModelPath}:log_path=vmaf.log:log_fmt=json`);
-    }
-
-    filterComplex += metrics.join(',');
-
-    const cmd = `ffmpeg -i "${convertedPath}" -i "${originalPath}" -lavfi "${filterComplex}" -f null - 2>&1`;
-
-    const { stdout, stderr } = await execPromise(cmd, { maxBuffer: 10 * 1024 * 1024 });
-    const output = stdout + stderr;
-
-    const ssimMatch = output.exec(/SSIM.*All:(\d+\.\d+)/);
-    const ssimValue = ssimMatch ? parseFloat(ssimMatch[1]) : null;
-
-    const psnrMatch = output.exec(/PSNR.*average:(\d+\.\d+)/);
-    const psnrValue = psnrMatch ? parseFloat(psnrMatch[1]) : null;
-
-    let vmafValue = null;
-    if (vmafModelPath && fsSync.existsSync('vmaf.log')) {
-      try {
-        const vmafLog = await fs.readFile('vmaf.log', 'utf8');
-        const vmafData = JSON.parse(vmafLog);
-        if (vmafData.pooled_metrics && vmafData.pooled_metrics.vmaf) {
-          vmafValue = vmafData.pooled_metrics.vmaf.mean;
-        }
-      } catch (e) {
-        logger.error('Error parsing VMAF log:', e);
-      }
-      await fs.unlink('vmaf.log').catch(() => { });
-    }
-
-    // Cleanup log files
-    ['ssim.log', 'psnr.log'].forEach(async (logFile) => {
-      if (fsSync.existsSync(logFile)) {
-        await fs.unlink(logFile).catch(() => { });
-      }
-    });
-
-    return {
-      ssim: ssimValue,
-      psnr: psnrValue,
-      vmaf: vmafValue,
-      interpretation: interpretQualityMetrics(ssimValue, psnrValue, vmafValue)
-    };
-
-  } catch (error) {
-    logger.error('Error calculating quality metrics:', error);
-    return {
-      ssim: null,
-      psnr: null,
-      vmaf: null,
-      error: error.message
-    };
-  }
-};
-
-const interpretQualityMetrics = (ssim, psnr, vmaf) => {
-  const interpretation = {
-    overall: 'unknown',
-    details: [],
-    score: 0
-  };
-
-  let scores = [];
-
-  if (ssim !== null) {
-    scores.push(ssim * 100);
-    if (ssim >= 0.98) {
-      interpretation.details.push('SSIM: Excellent (virtually identical)');
-    } else if (ssim >= 0.95) {
-      interpretation.details.push('SSIM: Very Good (minor differences)');
-    } else if (ssim >= 0.88) {
-      interpretation.details.push('SSIM: Good (noticeable but acceptable)');
-    } else if (ssim >= 0.80) {
-      interpretation.details.push('SSIM: Fair (visible degradation)');
-    } else {
-      interpretation.details.push('SSIM: Poor (significant degradation)');
-    }
-  }
-
-  if (psnr !== null) {
-    scores.push(Math.min(100, psnr * 2.5));
-    if (psnr >= 40) {
-      interpretation.details.push('PSNR: Excellent quality');
-    } else if (psnr >= 35) {
-      interpretation.details.push('PSNR: Good quality');
-    } else if (psnr >= 30) {
-      interpretation.details.push('PSNR: Acceptable quality');
-    } else if (psnr >= 25) {
-      interpretation.details.push('PSNR: Poor quality');
-    } else {
-      interpretation.details.push('PSNR: Very poor quality');
-    }
-  }
-
-  if (vmaf !== null) {
-    scores.push(vmaf);
-    if (vmaf >= 95) {
-      interpretation.details.push('VMAF: Excellent (broadcast quality)');
-    } else if (vmaf >= 80) {
-      interpretation.details.push('VMAF: Good (streaming quality)');
-    } else if (vmaf >= 60) {
-      interpretation.details.push('VMAF: Fair (acceptable for mobile)');
-    } else {
-      interpretation.details.push('VMAF: Poor (noticeable quality loss)');
-    }
-  }
-
-  if (scores.length > 0) {
-    interpretation.score = scores.reduce((a, b) => a + b, 0) / scores.length;
-    if (interpretation.score >= 90) interpretation.overall = 'Excellent';
-    else if (interpretation.score >= 75) interpretation.overall = 'Good';
-    else if (interpretation.score >= 60) interpretation.overall = 'Acceptable';
-    else interpretation.overall = 'Poor';
-  }
-
-  return interpretation;
-};
-
 // Formatear tamaño de archivo
 const formatSize = (bytes) => {
   const sizes = ['Bytes', 'KB', 'MB', 'GB'];
@@ -668,10 +508,183 @@ const formatDuration = (seconds) => {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
-  return h > 0 ? `${h}h ${m}m ${s}s` : m > 0 ? `${m}m ${s}s` : `${s}s`;
+  let result;
+  if (h > 0) {
+    result = `${h}h ${m}m ${s}s`;
+  } else if (m > 0) {
+    result = `${m}m ${s}s`;
+  } else {
+    result = `${s}s`;
+  }
+  return result;
 };
 
 // ===================== FUNCIONES DE CONVERSIÓN =====================
+
+function buildVideoFilters({ speed, removeAudio, denoise, stabilize, crop, rotate, flip, watermark }) {
+  const videoFilters = [];
+
+  if (speed !== 1.0) {
+    videoFilters.push(`setpts=${1 / speed}*PTS`);
+  }
+  if (denoise) {
+    videoFilters.push('hqdn3d=4:3:6:4.5');
+  }
+  if (stabilize) {
+    videoFilters.push('deshake');
+  }
+  if (crop) {
+    videoFilters.push(`crop=${crop}`);
+  }
+  if (rotate) {
+    videoFilters.push(`rotate=${rotate}*PI/180`);
+  }
+  if (flip === 'horizontal') {
+    videoFilters.push('hflip');
+  } else if (flip === 'vertical') {
+    videoFilters.push('vflip');
+  }
+  if (watermark && fsSync.existsSync(watermark.path)) {
+    const position = watermark.position || 'bottomright';
+    const positions = {
+      topleft: 'x=10:y=10',
+      topright: 'x=W-w-10:y=10',
+      bottomleft: 'x=10:y=H-h-10',
+      bottomright: 'x=W-w-10:y=H-h-10',
+      center: 'x=(W-w)/2:y=(H-h)/2'
+    };
+    videoFilters.push(`movie=${watermark.path}[watermark];[in][watermark]overlay=${positions[position]}[out]`);
+  }
+  return videoFilters;
+}
+
+function applyAudioOptions(command, { removeAudio, presetConfig, normalizeAudio, speed }) {
+  if (removeAudio) {
+    command.noAudio();
+  } else if (presetConfig.audioCodec) {
+    command.audioCodec(presetConfig.audioCodec);
+    if (presetConfig.audioBitrate) {
+      command.audioBitrate(presetConfig.audioBitrate);
+    }
+    if (normalizeAudio) {
+      command.audioFilters('loudnorm=I=-16:TP=-1.5:LRA=11');
+    }
+    if (speed !== 1.0) {
+      command.audioFilters(`atempo=${speed}`);
+    }
+  }
+}
+
+function buildOutputOptions({ twoPass, presetConfig, jobId, customOptions }) {
+  const outputOptions = [];
+  if (twoPass && presetConfig.videoCodec === 'libx264') {
+    outputOptions.push(
+      `-pass`, `2`,
+      `-passlogfile`, path.join(dirs.temp, `pass_${jobId}`)
+    );
+  }
+  if (presetConfig.crf) {
+    outputOptions.push(`-crf`, `${presetConfig.crf}`);
+  }
+  if (presetConfig.preset) {
+    outputOptions.push(`-preset`, `${presetConfig.preset}`);
+  }
+  if (presetConfig.extraOptions) {
+    outputOptions.push(...presetConfig.extraOptions);
+  }
+  if (customOptions.length > 0) {
+    outputOptions.push(...customOptions);
+  }
+  return outputOptions;
+}
+
+async function runTwoPass(inputPath, presetConfig, jobId) {
+  await new Promise((resolve, reject) => {
+    ffmpeg(inputPath)
+      .videoCodec('libx264')
+      .outputOptions([
+        `-pass`, `1`,
+        `-crf`, `${presetConfig.crf}`,
+        `-preset`, `${presetConfig.preset}`,
+        `-passlogfile`, path.join(dirs.temp, `pass_${jobId}`),
+        `-f`, `null`
+      ])
+      .output('/dev/null')
+      .on('end', resolve)
+      .on('error', reject)
+      .run();
+  });
+}
+
+function handleProgress(jobId, progress) {
+  const currentProgress = Math.min(99, Math.round(progress.percent || 0));
+  return redis.hset(`job:${jobId}`, {
+    status: 'processing',
+    progress: currentProgress,
+    currentTime: progress.timemark,
+    fps: progress.currentFps,
+    speed: progress.currentKbps,
+    updatedAt: Date.now()
+  }).then(() =>
+    redis.publish('job:progress', JSON.stringify({
+      jobId,
+      progress: currentProgress,
+      currentTime: progress.timemark,
+      fps: progress.currentFps
+    }))
+  );
+}
+
+async function handleEnd({ jobId, inputPath, outputPath, calculateMetrics }) {
+  let metrics = null;
+  if (calculateMetrics) {
+    metrics = await calculateAdvancedMetrics(inputPath, outputPath);
+  }
+  const outputInfo = await getMediaInfo(outputPath);
+  const outputStats = await fs.stat(outputPath);
+
+  const result = {
+    success: true,
+    outputPath,
+    outputSize: outputStats.size,
+    outputInfo,
+    metrics,
+    processingTime: Date.now() - jobManager.getJob(jobId).createdAt
+  };
+
+  await redis.publish('job:completed', JSON.stringify({
+    jobId,
+    result
+  }));
+
+  jobManager.updateJob(jobId, {
+    status: 'completed',
+    progress: 100,
+    result,
+    completedAt: Date.now()
+  });
+
+  return result;
+}
+
+async function handleError(jobId, err) {
+  logger.error(`Job ${jobId} error:`, err);
+  jobManager.updateJob(jobId, {
+    status: 'failed',
+    error: err?.message ?? String(err)
+  });
+  await redis.publish('job:failed', JSON.stringify({
+    jobId,
+    error: err?.message ?? String(err)
+  }));
+  let errorObj;
+  if (err instanceof Error) {
+    errorObj = err;
+  } else {
+    errorObj = new Error(`Job ${jobId} failed: ${err?.message ?? String(err)}`);
+  }
+  throw errorObj;
+}
 
 const convertVideoWithProgress = async (jobId, inputPath, outputPath, options = {}, bullJob = null) => {
   const {
@@ -696,10 +709,8 @@ const convertVideoWithProgress = async (jobId, inputPath, outputPath, options = 
   } = options;
 
   const presetConfig = PRESETS[preset] || PRESETS['balanced'];
-
   let command = ffmpeg(inputPath);
 
-  // Segmento de video
   if (startTime !== null) {
     command.setStartTime(startTime);
   }
@@ -707,225 +718,58 @@ const convertVideoWithProgress = async (jobId, inputPath, outputPath, options = 
     command.setDuration(duration);
   }
 
-  // Filtros de video
-  let videoFilters = [];
-
-  // Ajuste de velocidad
-  if (speed !== 1.0) {
-    videoFilters.push(`setpts=${1 / speed}*PTS`);
-    if (!removeAudio) {
-      command.audioFilters(`atempo=${speed}`);
-    }
-  }
-
-  // Reducción de ruido
-  if (denoise) {
-    videoFilters.push('hqdn3d=4:3:6:4.5');
-  }
-
-  // Estabilización
-  if (stabilize) {
-    videoFilters.push('deshake');
-  }
-
-  // Recorte
-  if (crop) {
-    videoFilters.push(`crop=${crop}`);
-  }
-
-  // Rotación
-  if (rotate) {
-    videoFilters.push(`rotate=${rotate}*PI/180`);
-  }
-
-  // Volteo
-  if (flip === 'horizontal') {
-    videoFilters.push('hflip');
-  } else if (flip === 'vertical') {
-    videoFilters.push('vflip');
-  }
-
-  // Marca de agua
-  if (watermark && fsSync.existsSync(watermark.path)) {
-    const position = watermark.position || 'bottomright';
-    const positions = {
-      topleft: 'x=10:y=10',
-      topright: 'x=W-w-10:y=10',
-      bottomleft: 'x=10:y=H-h-10',
-      bottomright: 'x=W-w-10:y=H-h-10',
-      center: 'x=(W-w)/2:y=(H-h)/2'
-    };
-    videoFilters.push(`movie=${watermark.path}[watermark];[in][watermark]overlay=${positions[position]}[out]`);
-  }
-
+  const videoFilters = buildVideoFilters({ speed, removeAudio, denoise, stabilize, crop, rotate, flip, watermark });
   if (videoFilters.length > 0) {
     command.videoFilters(videoFilters);
   }
 
-  // Subtítulos
   if (subtitles && fsSync.existsSync(subtitles)) {
     command.outputOptions(['-vf', `subtitles=${subtitles}`]);
   }
 
-  // Aplicar configuraciones de preset
   if (presetConfig.videoCodec) {
     command.videoCodec(presetConfig.videoCodec);
   }
 
-  // Configuración de audio
-  if (removeAudio) {
-    command.noAudio();
-  } else if (presetConfig.audioCodec) {
-    command.audioCodec(presetConfig.audioCodec);
-    if (presetConfig.audioBitrate) {
-      command.audioBitrate(presetConfig.audioBitrate);
-    }
-    if (normalizeAudio) {
-      command.audioFilters('loudnorm=I=-16:TP=-1.5:LRA=11');
-    }
-  }
+  applyAudioOptions(command, { removeAudio, presetConfig, normalizeAudio, speed });
 
-  // Resolución
   if (resolution || presetConfig.resolution) {
     command.size(resolution || presetConfig.resolution);
   }
-
-  // FPS
   if (presetConfig.fps) {
     command.fps(presetConfig.fps);
   }
 
-  // Opciones de salida
-  const outputOptions = [];
-
-  // Codificación de dos pasos para mejor calidad
   if (twoPass && presetConfig.videoCodec === 'libx264') {
-    // Primer paso
-    await new Promise((resolve, reject) => {
-      ffmpeg(inputPath)
-        .videoCodec('libx264')
-        .outputOptions([
-          `-pass`, `1`,
-          `-crf`, `${presetConfig.crf}`,
-          `-preset`, `${presetConfig.preset}`,
-          `-passlogfile`, path.join(dirs.temp, `pass_${jobId}`),
-          `-f`, `null`
-        ])
-        .output('/dev/null')
-        .on('end', resolve)
-        .on('error', reject)
-        .run();
-    });
-
-    // Segundo paso
-    outputOptions.push(
-      `-pass`, `2`,
-      `-passlogfile`, path.join(dirs.temp, `pass_${jobId}`)
-    );
+    await runTwoPass(inputPath, presetConfig, jobId);
   }
 
-  if (presetConfig.crf) {
-    outputOptions.push(`-crf`, `${presetConfig.crf}`);
-  }
-
-  if (presetConfig.preset) {
-    outputOptions.push(`-preset`, `${presetConfig.preset}`);
-  }
-
-  // Ajustes específicos para ciertos formatos
-  if (presetConfig.extraOptions) {
-    outputOptions.push(...presetConfig.extraOptions);
-  }
-
-  // Agregar opciones personalizadas
-  if (customOptions.length > 0) {
-    outputOptions.push(...customOptions);
-  }
-
+  const outputOptions = buildOutputOptions({ twoPass, presetConfig, jobId, customOptions });
   command.outputOptions(outputOptions);
-
-  // Formato de salida
   command.toFormat(format);
 
   return new Promise((resolve, reject) => {
-    let totalDuration = 0;
-
     command
       .on('codecData', (data) => {
-        totalDuration = parseInt(data.duration.replace(/:/g, ''));
         logger.info(`Job ${jobId} - Total duration: ${data.duration}`);
       })
-      .on('progress', async (progress) => {
-        const currentProgress = Math.min(99, Math.round(progress.percent || 0));
-
-        // Guardar en Redis
-        await redis.hset(`job:${jobId}`, {
-          status: 'processing',
-          progress: currentProgress,
-          currentTime: progress.timemark,
-          fps: progress.currentFps,
-          speed: progress.currentKbps,
-          updatedAt: Date.now()
-        });
-
-        // Publicar evento
-        await redis.publish('job:progress', JSON.stringify({
-          jobId,
-          progress: currentProgress,
-          currentTime: progress.timemark,
-          fps: progress.currentFps
-        }));
+      .on('progress', (progress) => {
+        handleProgress(jobId, progress).catch(logger.error);
       })
       .on('end', async () => {
         try {
-          // Calcular métricas avanzadas si se requiere
-          let metrics = null;
-          if (calculateMetrics) {
-            metrics = await calculateAdvancedMetrics(inputPath, outputPath);
-          }
-
-          // Obtener info del archivo de salida
-          const outputInfo = await getMediaInfo(outputPath);
-          const outputStats = await fs.stat(outputPath);
-
-          const result = {
-            success: true,
-            outputPath,
-            outputSize: outputStats.size,
-            outputInfo,
-            metrics,
-            processingTime: Date.now() - jobManager.getJob(jobId).createdAt
-          };
-
-          // Actualizar job en Redis
-          await redis.publish('job:completed', JSON.stringify({
-            jobId,
-            result
-          }));
-
-          jobManager.updateJob(jobId, {
-            status: 'completed',
-            progress: 100,
-            result,
-            completedAt: Date.now()
-          });
-
+          const result = await handleEnd({ jobId, inputPath, outputPath, calculateMetrics });
           resolve(result);
         } catch (error) {
-          reject(error);
+          reject(new Error(`Failed to finalize job ${jobId}: ${error.message}`));
         }
       })
       .on('error', async (err) => {
-        logger.error(`Job ${jobId} error:`, err);
-        jobManager.updateJob(jobId, {
-          status: 'failed',
-          error: err.message
-        });
-        await redis.publish('job:failed', JSON.stringify({
-          jobId,
-          error: err.message
-        }));
-        reject(err);
+        try {
+          await handleError(jobId, err);
+        } catch (errorObj) {
+          reject(errorObj instanceof Error ? errorObj : new Error(String(errorObj)));
+        }
       })
       .save(outputPath);
   });
@@ -961,9 +805,10 @@ app.get('/api/formats', async (req, res) => {
   try {
     const { stdout } = await execPromise('ffmpeg -formats');
     const formats = stdout.split('\n')
-      .filter(line => line.match(/^\s*[DE]/))
+      .filter(line => /^\s*[DE]/.exec(line))
       .map(line => {
-        const match = line.match(/^\s*([DE]+)\s+(\S+)\s+(.*)/);
+        const regex = /^\s*([DE]+)\s+(\S+)\s+(.*)/;
+        const match = regex.exec(line);
         if (match) {
           return {
             support: match[1],
@@ -976,6 +821,7 @@ app.get('/api/formats', async (req, res) => {
 
     res.json(formats);
   } catch (error) {
+    logger.error('Failed to get formats:', error);
     res.status(500).json({ error: 'Failed to get formats' });
   }
 });
@@ -985,9 +831,10 @@ app.get('/api/codecs', async (req, res) => {
   try {
     const { stdout } = await execPromise('ffmpeg -codecs');
     const codecs = stdout.split('\n')
-      .filter(line => line.match(/^\s*[DEVASIL]/))
+      .filter(line => /^\s*[DEVASIL]/.exec(line))
       .map(line => {
-        const match = line.match(/^\s*([DEVASIL.]+)\s+(\S+)\s+(.*)/);
+        const regex = /^\s*([DEVASIL.]+)\s+(\S+)\s+(.*)/;
+        const match = regex.exec(line);
         if (match) {
           return {
             support: match[1],
@@ -1003,6 +850,7 @@ app.get('/api/codecs', async (req, res) => {
       audio: codecs.filter(c => c.support.includes('A'))
     });
   } catch (error) {
+    logger.error('Failed to get codecs:', error);
     res.status(500).json({ error: 'Failed to get codecs' });
   }
 });
@@ -1440,7 +1288,7 @@ app.use((error, req, res, next) => {
     return res.status(413).json({ error: 'File size too large' });
   }
 
-  if (error.message && error.message.includes('Only video and audio files')) {
+  if (error.message?.includes('Only video and audio files')) {
     return res.status(400).json({ error: error.message });
   }
 
