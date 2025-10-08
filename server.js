@@ -453,7 +453,7 @@ const getMediaInfo = (filePath) => {
   return new Promise((resolve, reject) => {
     ffmpeg.ffprobe(filePath, (err, metadata) => {
       if (err) {
-        reject(err);
+        reject(new Error('Failed to retrieve media info'));
       } else {
         const videoStream = metadata.streams.find(s => s.codec_type === 'video');
         const audioStream = metadata.streams.find(s => s.codec_type === 'audio');
@@ -548,10 +548,10 @@ const calculateQualityMetrics = async (originalPath, convertedPath) => {
     const { stdout, stderr } = await execPromise(cmd, { maxBuffer: 10 * 1024 * 1024 });
     const output = stdout + stderr;
 
-    const ssimMatch = output.match(/SSIM.*All:(\d+\.\d+)/);
+    const ssimMatch = output.exec(/SSIM.*All:(\d+\.\d+)/);
     const ssimValue = ssimMatch ? parseFloat(ssimMatch[1]) : null;
 
-    const psnrMatch = output.match(/PSNR.*average:(\d+\.\d+)/);
+    const psnrMatch = output.exec(/PSNR.*average:(\d+\.\d+)/);
     const psnrValue = psnrMatch ? parseFloat(psnrMatch[1]) : null;
 
     let vmafValue = null;

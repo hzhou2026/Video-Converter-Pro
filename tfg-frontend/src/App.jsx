@@ -1,87 +1,68 @@
 import React, { useState, useEffect } from 'react';
-import { io } from 'socket.io-client';
 import UploadForm from './componentes/UploadForm';
 import ProgressBar from './componentes/ProgressBar';
 import ResultsTable from './componentes/ResultsTable';
 import MetricsChart from './componentes/MetricsChart';
 import Dashboard from './pages/Dashboard';
+import { useSocket } from './hooks/useSocket';
+import { api } from './servicios/api';
 import './App.css';
 
+// Configuración de tabs
+const TABS = [
+  { key: 'upload', label: 'Subir y Convertir', icon: '📤' },
+  { key: 'jobs', label: 'Trabajos', icon: '⚙️' },
+  { key: 'metrics', label: 'Métricas', icon: '📊' },
+  { key: 'dashboard', label: 'Dashboard', icon: '🎛️' }
+];
+
 function App() {
-  const [socket, setSocket] = useState(null);
+  const socket = useSocket('http://localhost:3000');
   const [jobs, setJobs] = useState([]);
   const [activeTab, setActiveTab] = useState('upload');
   const [presets, setPresets] = useState({});
   const [formats, setFormats] = useState([]);
   const [systemHealth, setSystemHealth] = useState(null);
 
+  // Cargar datos iniciales
   useEffect(() => {
-    // Inicializar conexión WebSocket
-    const newSocket = io('http://localhost:3000');
-    setSocket(newSocket);
-
-    // Cargar datos iniciales
-    fetchPresets();
-    fetchFormats();
-    fetchJobs();
-    fetchSystemHealth();
-
-    // Limpiar conexión al desmontar
-    return () => {
-      newSocket.close();
-    };
+    loadInitialData();
   }, []);
 
+  // Configurar listeners de socket
   useEffect(() => {
     if (socket) {
-      socket.on('job:update', (updatedJob) => {
-        setJobs(prevJobs => 
-          prevJobs.map(job => 
-            job.id === updatedJob.id ? updatedJob : job
-          )
-        );
-      });
+      socket.on('job:update', handleJobUpdate);
+      return () => {
+        socket.off('job:update', handleJobUpdate);
+      };
     }
   }, [socket]);
 
-  const fetchPresets = async () => {
+  const loadInitialData = async () => {
     try {
-      const response = await fetch('http://localhost:3000/api/presets');
-      const data = await response.json();
-      setPresets(data);
+      const [presetsData, formatsData, jobsData, healthData] = await Promise.all([
+        api.fetchPresets(),
+        api.fetchFormats(),
+        api.fetchJobs(),
+        api.fetchSystemHealth()
+      ]);
+      
+      setPresets(presetsData);
+      setFormats(formatsData);
+      setJobs(jobsData);
+      setSystemHealth(healthData);
     } catch (error) {
-      console.error('Error fetching presets:', error);
+      console.error('Error loading initial data:', error);
     }
   };
 
-  const fetchFormats = async () => {
-    try {
-      const response = await fetch('http://localhost:3000/api/formats');
-      const data = await response.json();
-      setFormats(data);
-    } catch (error) {
-      console.error('Error fetching formats:', error);
-    }
-  };
-
-  const fetchJobs = async () => {
-    try {
-      const response = await fetch('http://localhost:3000/api/jobs');
-      const data = await response.json();
-      setJobs(data);
-    } catch (error) {
-      console.error('Error fetching jobs:', error);
-    }
-  };
-
-  const fetchSystemHealth = async () => {
-    try {
-      const response = await fetch('http://localhost:3000/api/health');
-      const data = await response.json();
-      setSystemHealth(data);
-    } catch (error) {
-      console.error('Error fetching system health:', error);
-    }
+  const handleJobUpdate = (updatedJob) => {
+    setJobs(prevJobs =>
+      prevJobs.map(job =>
+        job.id === updatedJob.id ? updatedJob : job
+      )
+    );
   };
 
   const handleJobCreated = (job) => {
@@ -93,11 +74,9 @@ function App() {
 
   const handleJobCancel = async (jobId) => {
     try {
-      await fetch(`http://localhost:3000/api/job/${jobId}`, {
-        method: 'DELETE'
-      });
-      setJobs(prevJobs => 
-        prevJobs.map(job => 
+      await api.cancelJob(jobId);
+      setJobs(prevJobs =>
+        prevJobs.map(job =>
           job.id === jobId ? { ...job, status: 'cancelled' } : job
         )
       );
@@ -106,55 +85,77 @@ function App() {
     }
   };
 
-  const tabContent = {
-    upload: (
-      <UploadForm 
-        presets={presets}
-        formats={formats}
-        onJobCreated={handleJobCreated}
-      />
-    ),
-    jobs: (
-      <div className="jobs-section">
-        <div className="jobs-header">
-          <h2>Trabajos de Conversión</h2>
-          <button onClick={fetchJobs} className="btn-refresh">
-            Actualizar
-          </button>
-        </div>
-        {jobs.length === 0 ? (
-          <div className="no-jobs">
-            <p>No hay trabajos de conversión</p>
+  const refreshData = async () => {
+    try {
+      const [jobsData, healthData] = await Promise.all([
+        api.fetchJobs(),
+        api.fetchSystemHealth()
+      ]);
+      setJobs(jobsData);
+      setSystemHealth(healthData);
+    } catch (error) {
+      console.error('Error refreshing data:', error);
+    }
+  };
+
+  const activeJobs = jobs.filter(job => ['queued', 'processing'].includes(job.status));
+  const completedJobs = jobs.filter(job => ['completed', 'failed', 'cancelled'].includes(job.status));
+  const finishedJobs = jobs.filter(job => job.status === 'completed');
+
+  const renderTabContent = () => {
+    switch (activeTab) {
+      case 'upload':
+        return (
+          <UploadForm
+            presets={presets}
+            formats={formats}
+            onJobCreated={handleJobCreated}
+          />
+        );
+      
+      case 'jobs':
+        return (
+          <div className="jobs-section">
+            <div className="jobs-header">
+              <h2>Trabajos de Conversión</h2>
+              <button onClick={refreshData} className="btn-refresh">
+                Actualizar
+              </button>
+            </div>
+            {jobs.length === 0 ? (
+              <div className="no-jobs">
+                <p>No hay trabajos de conversión</p>
+              </div>
+            ) : (
+              <>
+                {activeJobs.map(job => (
+                  <ProgressBar
+                    key={job.id}
+                    job={job}
+                    onCancel={() => handleJobCancel(job.id)}
+                  />
+                ))}
+                <ResultsTable jobs={completedJobs} />
+              </>
+            )}
           </div>
-        ) : (
-          <>
-            {jobs.filter(job => ['queued', 'processing'].includes(job.status)).map(job => (
-              <ProgressBar 
-                key={job.id}
-                job={job}
-                onCancel={() => handleJobCancel(job.id)}
-              />
-            ))}
-            <ResultsTable 
-              jobs={jobs.filter(job => ['completed', 'failed', 'cancelled'].includes(job.status))}
-            />
-          </>
-        )}
-      </div>
-    ),
-    metrics: (
-      <MetricsChart jobs={jobs.filter(job => job.status === 'completed')} />
-    ),
-    dashboard: (
-      <Dashboard 
-        jobs={jobs}
-        systemHealth={systemHealth}
-        onRefresh={() => {
-          fetchJobs();
-          fetchSystemHealth();
-        }}
-      />
-    )
+        );
+      
+      case 'metrics':
+        return <MetricsChart jobs={finishedJobs} />;
+      
+      case 'dashboard':
+        return (
+          <Dashboard
+            jobs={jobs}
+            systemHealth={systemHealth}
+            onRefresh={refreshData}
+          />
+        );
+      
+      default:
+        return null;
+    }
   };
 
   return (
@@ -178,12 +179,7 @@ function App() {
 
       <nav className="app-nav">
         <div className="nav-tabs">
-          {[
-            { key: 'upload', label: 'Subir y Convertir', icon: '📤' },
-            { key: 'jobs', label: 'Trabajos', icon: '⚙️' },
-            { key: 'metrics', label: 'Métricas', icon: '📊' },
-            { key: 'dashboard', label: 'Dashboard', icon: '🎛️' }
-          ].map(tab => (
+          {TABS.map(tab => (
             <button
               key={tab.key}
               className={`nav-tab ${activeTab === tab.key ? 'active' : ''}`}
@@ -198,7 +194,7 @@ function App() {
 
       <main className="app-main">
         <div className="content-container">
-          {tabContent[activeTab]}
+          {renderTabContent()}
         </div>
       </main>
 
@@ -206,8 +202,8 @@ function App() {
         <div className="footer-content">
           <p>Video Converter Pro - Trabajo Final de Grado</p>
           <div className="footer-stats">
-            <span>Trabajos Activos: {jobs.filter(j => ['queued', 'processing'].includes(j.status)).length}</span>
-            <span>Trabajos Completados: {jobs.filter(j => j.status === 'completed').length}</span>
+            <span>Trabajos Activos: {activeJobs.length}</span>
+            <span>Trabajos Completados: {finishedJobs.length}</span>
           </div>
         </div>
       </footer>
