@@ -1,8 +1,6 @@
+// servicios/api.js
 const BASE_URL = 'http://localhost:3000';
 
-/**
- * Maneja errores de las peticiones HTTP
- */
 const handleResponse = async (response) => {
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
@@ -11,9 +9,6 @@ const handleResponse = async (response) => {
   return response.json();
 };
 
-/**
- * Realiza una petición HTTP
- */
 const request = async (endpoint, options = {}) => {
   try {
     const response = await fetch(`${BASE_URL}${endpoint}`, {
@@ -30,45 +25,22 @@ const request = async (endpoint, options = {}) => {
   }
 };
 
-/**
- * API service para interactuar con el backend
- */
 export const api = {
-  /**
-   * Obtiene los presets de conversión disponibles
-   */
   fetchPresets: () => request('/api/presets'),
-
-  /**
-   * Obtiene los formatos de video soportados
-   */
+  
   fetchFormats: () => request('/api/formats'),
-
-  /**
-   * Obtiene todos los trabajos de conversión
-   */
+  
   fetchJobs: () => request('/api/jobs'),
-
-  /**
-   * Obtiene el estado de salud del sistema
-   */
+  
   fetchSystemHealth: () => request('/api/health'),
-
-  /**
-   * Obtiene un trabajo específico por ID
-   * @param {string} jobId - ID del trabajo
-   */
+  
   fetchJob: (jobId) => request(`/api/job/${jobId}`),
-
-  /**
-   * Crea un nuevo trabajo de conversión
-   * @param {FormData} formData - Datos del formulario con el archivo y configuración
-   */
+  
   createJob: async (formData) => {
     try {
       const response = await fetch(`${BASE_URL}/api/upload`, {
         method: 'POST',
-        body: formData // No establecer Content-Type para FormData
+        body: formData
       });
       return handleResponse(response);
     } catch (error) {
@@ -76,20 +48,11 @@ export const api = {
       throw error;
     }
   },
-
-  /**
-   * Cancela un trabajo de conversión
-   * @param {string} jobId - ID del trabajo a cancelar
-   */
+  
   cancelJob: (jobId) => request(`/api/job/${jobId}`, {
     method: 'DELETE'
   }),
-
-  /**
-   * Descarga el archivo convertido
-   * @param {string} jobId - ID del trabajo
-   * @returns {Promise<Blob>} - Archivo como Blob
-   */
+  
   downloadJob: async (jobId) => {
     try {
       const response = await fetch(`${BASE_URL}/api/download/${jobId}`);
@@ -102,15 +65,24 @@ export const api = {
       throw error;
     }
   },
-
-  /**
-   * Obtiene métricas del sistema
-   */
+  
+  analyzeFile: async (file) => {
+    try {
+      const formData = new FormData();
+      formData.append('media', file);
+      const response = await fetch(`${BASE_URL}/api/analyze`, {
+        method: 'POST',
+        body: formData
+      });
+      return handleResponse(response);
+    } catch (error) {
+      console.error('API Error (analyzeFile):', error);
+      throw error;
+    }
+  },
+  
   fetchMetrics: () => request('/api/metrics'),
-
-  /**
-   * Limpia trabajos antiguos completados
-   */
+  
   cleanupJobs: () => request('/api/jobs/cleanup', {
     method: 'POST'
   })

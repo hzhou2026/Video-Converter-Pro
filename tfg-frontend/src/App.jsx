@@ -1,23 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import UploadForm from './componentes/UploadForm';
 import ProgressBar from './componentes/ProgressBar';
-import ResultsTable from './componentes/ResultsTable';
-import MetricsChart from './componentes/MetricsChart';
-import Dashboard from './pages/Dashboard';
 import { useSocket } from './hooks/useSocket';
 import { api } from './servicios/api';
 import './App.css';
 
-// Configuración de tabs
 const TABS = [
   { key: 'upload', label: 'Subir y Convertir', icon: '📤' },
   { key: 'jobs', label: 'Trabajos', icon: '⚙️' },
-  { key: 'metrics', label: 'Métricas', icon: '📊' },
-  { key: 'dashboard', label: 'Dashboard', icon: '🎛️' }
 ];
 
 function App() {
+  // Socket.io
   const socket = useSocket('http://localhost:3000');
+  
   const [jobs, setJobs] = useState([]);
   const [activeTab, setActiveTab] = useState('upload');
   const [presets, setPresets] = useState({});
@@ -29,14 +25,17 @@ function App() {
     loadInitialData();
   }, []);
 
-  // Configurar listeners de socket
+  // Configurar listeners de socket UNA VEZ
   useEffect(() => {
-    if (socket) {
-      socket.on('job:update', handleJobUpdate);
-      return () => {
-        socket.off('job:update', handleJobUpdate);
-      };
-    }
+    if (!socket) return;
+
+    // Escuchar actualizaciones de jobs
+    socket.on('job:update', handleJobUpdate);
+
+    // Limpieza al cerrar
+    return () => {
+      socket.off('job:update', handleJobUpdate);
+    };
   }, [socket]);
 
   const loadInitialData = async () => {
@@ -58,23 +57,62 @@ function App() {
   };
 
   const handleJobUpdate = (updatedJob) => {
-    setJobs(prevJobs =>
-      prevJobs.map(job =>
-        job.id === updatedJob.id ? updatedJob : job
-      )
-    );
+    setJobs(prevJobs => {
+      // Normalizar el ID del job
+      const jobId = updatedJob.id || updatedJob.jobId;
+      
+      // Buscar si el job ya existe
+      const jobIndex = prevJobs.findIndex(j => j.id === jobId);
+      
+      if (jobIndex !== -1) {
+        // Actualizar job existente
+        const newJobs = [...prevJobs];
+        newJobs[jobIndex] = {
+          ...newJobs[jobIndex],
+          ...updatedJob,
+          id: jobId // Mantener el ID consistente
+        };
+        return newJobs;
+      } else {
+        // Nuevo job (por si acaso)
+        return [...prevJobs, { ...updatedJob, id: jobId }];
+      }
+    });
   };
 
-  const handleJobCreated = (job) => {
-    setJobs(prevJobs => [job, ...prevJobs]);
+  const handleJobCreated = (response) => {
+    // Crear objeto de job con estructura consistente
+    const newJob = {
+      id: response.jobId, // El backend devuelve 'jobId'
+      status: response.status || 'queued',
+      progress: 0,
+      inputName: response.inputName || 'Video',
+      createdAt: Date.now()
+    };
+    
+    // Evitar duplicados
+    setJobs(prevJobs => {
+      const exists = prevJobs.find(j => j.id === newJob.id);
+      if (exists) {
+        console.warn('Job already exists:', newJob.id);
+        return prevJobs;
+      }
+      return [newJob, ...prevJobs];
+    });
+    
+    // Suscribirse a las actualizaciones del job
     if (socket) {
-      socket.emit('subscribe', job.jobId);
+      socket.emit('subscribe', newJob.id);
     }
+
+    // Cambiar a la pestaña de jobs para ver el progreso
+    setActiveTab('jobs');
   };
 
   const handleJobCancel = async (jobId) => {
     try {
       await api.cancelJob(jobId);
+      // La actualización vendrá por socket, pero actualizamos optimísticamente
       setJobs(prevJobs =>
         prevJobs.map(job =>
           job.id === jobId ? { ...job, status: 'cancelled' } : job
@@ -82,6 +120,7 @@ function App() {
       );
     } catch (error) {
       console.error('Error cancelling job:', error);
+      alert('Error al cancelar el trabajo');
     }
   };
 
@@ -119,40 +158,53 @@ function App() {
             <div className="jobs-header">
               <h2>Trabajos de Conversión</h2>
               <button onClick={refreshData} className="btn-refresh">
-                Actualizar
+                🔄 Actualizar
               </button>
             </div>
+            
             {jobs.length === 0 ? (
               <div className="no-jobs">
                 <p>No hay trabajos de conversión</p>
+                <p style={{ fontSize: '14px', marginTop: '8px', color: '#999' }}>
+                  Sube un video para comenzar
+                </p>
               </div>
             ) : (
               <>
-                {activeJobs.map(job => (
-                  <ProgressBar
-                    key={job.id}
-                    job={job}
-                    onCancel={() => handleJobCancel(job.id)}
-                  />
-                ))}
-                <ResultsTable jobs={completedJobs} />
+                {activeJobs.length > 0 && (
+                  <div style={{ marginBottom: '24px' }}>
+                    <h3 style={{ marginBottom: '12px', color: '#333' }}>
+                      En Proceso ({activeJobs.length})
+                    </h3>
+                    {activeJobs.map(job => (
+                      <ProgressBar
+                        key={job.id}
+                        job={job}
+                        onCancel={handleJobCancel}
+                      />
+                    ))}
+                  </div>
+                )}
+                
+                {completedJobs.length > 0 && (
+                  <div>
+                    <h3 style={{ marginBottom: '12px', color: '#333' }}>
+                      Completados ({completedJobs.length})
+                    </h3>
+                    {completedJobs.map(job => (
+                      <ProgressBar
+                        key={job.id}
+                        job={job}
+                        onCancel={handleJobCancel}
+                      />
+                    ))}
+                  </div>
+                )}
               </>
             )}
           </div>
         );
-      
-      case 'metrics':
-        return <MetricsChart jobs={finishedJobs} />;
-      
-      case 'dashboard':
-        return (
-          <Dashboard
-            jobs={jobs}
-            systemHealth={systemHealth}
-            onRefresh={refreshData}
-          />
-        );
-      
+        
       default:
         return null;
     }
@@ -203,7 +255,8 @@ function App() {
           <p>Video Converter Pro - Trabajo Final de Grado</p>
           <div className="footer-stats">
             <span>Trabajos Activos: {activeJobs.length}</span>
-            <span>Trabajos Completados: {finishedJobs.length}</span>
+            <span>Completados: {finishedJobs.length}</span>
+            <span>Total: {jobs.length}</span>
           </div>
         </div>
       </footer>
