@@ -2,6 +2,7 @@ import React from 'react';
 import PropTypes from 'prop-types';
 import './ProgressBar.css';
 
+// Componente ProgressBar
 const ProgressBar = ({ job, onCancel }) => {
   if (!job) {
     return null;
@@ -18,13 +19,9 @@ const ProgressBar = ({ job, onCancel }) => {
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
     const s = Math.floor(seconds % 60);
-    if (h > 0) {
-      return `${h}h ${m}m ${s}s`;
-    } else if (m > 0) {
-      return `${m}m ${s}s`;
-    } else {
-      return `${s}s`;
-    }
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
   };
 
   const formatFileSize = (bytes) => {
@@ -61,19 +58,17 @@ const ProgressBar = ({ job, onCancel }) => {
   const statusColor = getStatusColor();
   const canCancel = job.status === 'queued' || job.status === 'processing';
   const isCompleted = job.status === 'completed';
+  const isProcessing = job.status === 'processing';
 
   return (
-    <div className="progress-card">
+    <div className="progress-card" data-status={job.status}>
       {/* Encabezado */}
       <div className="progress-header">
         <div className="progress-info">
           <h4 className="progress-title">
             {job.inputName || job.filename || 'Video'}
           </h4>
-          <span 
-            className="progress-status" 
-            style={{ color: statusColor }}
-          >
+          <span className="progress-status" style={{ color: statusColor }}>
             {getStatusText()}
           </span>
         </div>
@@ -89,15 +84,14 @@ const ProgressBar = ({ job, onCancel }) => {
         )}
       </div>
 
-      {/* ProgressBar */}
+      {/* Barra de Progreso */}
       <div className="progress-bar-container">
         <div className="progress-bar-track">
           <div
             className="progress-bar-fill"
             style={{
               width: `${progress}%`,
-              backgroundColor: statusColor,
-              transition: job.status === 'processing' ? 'width 0.5s ease' : 'none'
+              backgroundColor: statusColor
             }}
           />
         </div>
@@ -107,35 +101,32 @@ const ProgressBar = ({ job, onCancel }) => {
       </div>
 
       {/* Detalles del Progreso */}
-      {(job.currentTime || job.fps || job.result) && (
+      {(isProcessing || isCompleted) && (
         <div className="progress-details">
-          {job.currentTime && (
+          {isProcessing && job.fps && (
             <div className="detail-item">
-              <span className="detail-label">Duración del video:</span>
-              <span className="detail-value">{job.currentTime}</span>
-            </div>
-          )}
-          {job.fps && (
-            <div className="detail-item">
-              <span className="detail-label">FPS:</span>
+              <span className="detail-label">📹 FPS:</span>
               <span className="detail-value">{parseFloat(job.fps).toFixed(2)}</span>
             </div>
           )}
-          {job.speed && (
+          
+          {isProcessing && job.speed && (
             <div className="detail-item">
-              <span className="detail-label">Velocidad:</span>
+              <span className="detail-label">⚡ Velocidad:</span>
               <span className="detail-value">{job.speed}</span>
             </div>
           )}
-          {job.result?.outputSize && (
+          
+          {isCompleted && job.result?.outputSize && (
             <div className="detail-item">
-              <span className="detail-label">Tamaño:</span>
+              <span className="detail-label">💾 Tamaño:</span>
               <span className="detail-value">{formatFileSize(job.result.outputSize)}</span>
             </div>
           )}
-          {job.result?.processingTime && (
+          
+          {isCompleted && job.result?.processingTime && (
             <div className="detail-item">
-              <span className="detail-label">Tiempo de conversión:</span>
+              <span className="detail-label">⏰ Tiempo:</span>
               <span className="detail-value">
                 {formatTime(job.result.processingTime / 1000)}
               </span>
@@ -144,7 +135,7 @@ const ProgressBar = ({ job, onCancel }) => {
         </div>
       )}
 
-      {/* Acciones de los botones */}
+      {/* Botón de Descarga */}
       {isCompleted && job.result && (
         <div className="progress-actions">
           <a
@@ -154,16 +145,6 @@ const ProgressBar = ({ job, onCancel }) => {
           >
             📥 Descargar
           </a>
-          {job.result.thumbnailPath && (
-            <a
-              href={`http://localhost:3000/api/stream/${job.id}`}
-              className="btn-action btn-preview"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              ▶️ Vista Previa
-            </a>
-          )}
         </div>
       )}
 
@@ -177,24 +158,24 @@ const ProgressBar = ({ job, onCancel }) => {
     </div>
   );
 };
+
 ProgressBar.propTypes = {
   job: PropTypes.shape({
-    id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
-    status: PropTypes.string,
+    id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
+    status: PropTypes.string.isRequired,
     progress: PropTypes.number,
     inputName: PropTypes.string,
     filename: PropTypes.string,
-    currentTime: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
     fps: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
     speed: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
     result: PropTypes.shape({
       outputSize: PropTypes.number,
-      processingTime: PropTypes.number,
-      thumbnailPath: PropTypes.string
+      processingTime: PropTypes.number
     }),
     error: PropTypes.string
-  }),
+  }).isRequired,
   onCancel: PropTypes.func.isRequired
 };
 
 export default ProgressBar;
+

@@ -1,26 +1,75 @@
 import React, { useState, useRef } from 'react';
+import PropTypes from 'prop-types';
 import { api } from '../servicios/api';
 
-const UploadForm = ({ presets, formats, onJobCreated }) => {
+const VIDEO_TYPES = [
+  'video/mp4', 'video/avi', 'video/mov', 'video/mkv', 
+  'video/webm', 'video/flv', 'video/wmv', 'video/m4v',
+  'video/3gp', 'video/ogv', 'video/x-msvideo', 'video/quicktime'
+];
+
+const VIDEO_EXTENSIONS = /\.(mp4|avi|mov|mkv|webm|flv|wmv|m4v|3gp|ogv|hevc|h265|mts|m2ts|ts|vob|mpg|mpeg)$/i;
+
+const DEFAULT_OPTIONS = {
+  format: 'mp4',
+  resolution: '',
+  startTime: '',
+  duration: '',
+  removeAudio: false,
+  twoPass: false,
+  normalizeAudio: false,
+  denoise: false,
+  stabilize: false,
+  speed: 1.0,
+  crop: '',
+  rotate: 0,
+  flip: ''
+};
+
+const RESOLUTIONS = [
+  { value: '', label: 'Original' },
+  { value: '3840x2160', label: '4K (3840x2160)' },
+  { value: '1920x1080', label: 'Full HD (1920x1080)' },
+  { value: '1280x720', label: 'HD (1280x720)' },
+  { value: '854x480', label: '480p' },
+  { value: '640x360', label: '360p' }
+];
+
+const FORMATS = ['mp4', 'webm', 'avi', 'mov', 'mkv'];
+
+const CHECKBOX_OPTIONS = [
+  { key: 'removeAudio', label: 'Eliminar Audio' },
+  { key: 'twoPass', label: 'Codificación de Dos Pasadas' },
+  { key: 'normalizeAudio', label: 'Normalizar Audio' },
+  { key: 'denoise', label: 'Reducir Ruido' },
+  { key: 'stabilize', label: 'Estabilizar Video' }
+];
+
+const formatFileSize = (bytes) => {
+  if (bytes === 0) return '0 Bytes';
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+};
+
+const formatDuration = (seconds) => {
+  if (!seconds) return '0s';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  return h > 0 ? `${h}h ${m}m ${s}s` : m > 0 ? `${m}m ${s}s` : `${s}s`;
+};
+
+const isVideoFile = (file) => {
+  return VIDEO_TYPES.includes(file.type) || VIDEO_EXTENSIONS.test(file.name);
+};
+
+const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => {
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileInfo, setFileInfo] = useState(null);
   const [selectedPreset, setSelectedPreset] = useState('balanced');
-  const [customOptions, setCustomOptions] = useState({
-    format: 'mp4',
-    resolution: '',
-    startTime: '',
-    duration: '',
-    removeAudio: false,
-    calculateMetrics: false,
-    twoPass: false,
-    normalizeAudio: false,
-    denoise: false,
-    stabilize: false,
-    speed: 1.0,
-    crop: '',
-    rotate: 0,
-    flip: ''
-  });
+  const [customOptions, setCustomOptions] = useState(DEFAULT_OPTIONS);
   const [isUploading, setIsUploading] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [analysisResults, setAnalysisResults] = useState(null);
@@ -36,35 +85,20 @@ const UploadForm = ({ presets, formats, onJobCreated }) => {
     setSelectedFile(file);
     setUploadError(null);
     
-    // Analizar archivo
     try {
       const data = await api.analyzeFile(file);
       setFileInfo(data.info);
       setAnalysisResults(data);
     } catch (error) {
       console.error('Error analyzing file:', error);
-      // No bloquear si falla el análisis
     }
-  };
-
-  const isVideoFile = (file) => {
-    const videoTypes = [
-      'video/mp4', 'video/avi', 'video/mov', 'video/mkv', 
-      'video/webm', 'video/flv', 'video/wmv', 'video/m4v',
-      'video/3gp', 'video/ogv', 'video/x-msvideo', 'video/quicktime'
-    ];
-    const videoExtensions = /\.(mp4|avi|mov|mkv|webm|flv|wmv|m4v|3gp|ogv|hevc|h265|mts|m2ts|ts|vob|mpg|mpeg)$/i;
-    
-    return videoTypes.includes(file.type) || videoExtensions.test(file.name);
   };
 
   const handleDrop = (e) => {
     e.preventDefault();
     setIsDragOver(false);
     const files = Array.from(e.dataTransfer.files);
-    if (files.length > 0) {
-      handleFileSelect(files[0]);
-    }
+    if (files.length > 0) handleFileSelect(files[0]);
   };
 
   const handleDragOver = (e) => {
@@ -75,6 +109,15 @@ const UploadForm = ({ presets, formats, onJobCreated }) => {
   const handleDragLeave = (e) => {
     e.preventDefault();
     setIsDragOver(false);
+  };
+
+  const resetForm = () => {
+    setSelectedFile(null);
+    setFileInfo(null);
+    setAnalysisResults(null);
+    setUploadError(null);
+    setCustomOptions(DEFAULT_OPTIONS);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleSubmit = async (e) => {
@@ -92,7 +135,6 @@ const UploadForm = ({ presets, formats, onJobCreated }) => {
     formData.append('video', selectedFile);
     formData.append('preset', selectedPreset);
     
-    // Agregar opciones personalizadas solo si tienen valor
     Object.entries(customOptions).forEach(([key, value]) => {
       if (value !== '' && value !== false && value !== 0 && value !== null) {
         formData.append(key, value);
@@ -100,7 +142,6 @@ const UploadForm = ({ presets, formats, onJobCreated }) => {
     });
 
     try {
-      // Usar el endpoint correcto del backend
       const response = await fetch('http://localhost:3000/api/convert', {
         method: 'POST',
         body: formData
@@ -112,11 +153,7 @@ const UploadForm = ({ presets, formats, onJobCreated }) => {
       }
 
       const data = await response.json();
-      
-      // Notificar al componente padre
       onJobCreated(data);
-      
-      // Limpiar formulario
       resetForm();
     } catch (error) {
       console.error('Error uploading file:', error);
@@ -126,46 +163,8 @@ const UploadForm = ({ presets, formats, onJobCreated }) => {
     }
   };
 
-  const resetForm = () => {
-    setSelectedFile(null);
-    setFileInfo(null);
-    setAnalysisResults(null);
-    setUploadError(null);
-    setCustomOptions({
-      format: 'mp4',
-      resolution: '',
-      startTime: '',
-      duration: '',
-      removeAudio: false,
-      calculateMetrics: false,
-      twoPass: false,
-      normalizeAudio: false,
-      denoise: false,
-      stabilize: false,
-      speed: 1.0,
-      crop: '',
-      rotate: 0,
-      flip: ''
-    });
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
-  const formatFileSize = (bytes) => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
-
-  const formatDuration = (seconds) => {
-    if (!seconds) return '0s';
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = Math.floor(seconds % 60);
-    return h > 0 ? `${h}h ${m}m ${s}s` : m > 0 ? `${m}m ${s}s` : `${s}s`;
+  const updateOption = (key, value) => {
+    setCustomOptions(prev => ({ ...prev, [key]: value }));
   };
 
   const applySuggestion = (preset) => {
@@ -184,13 +183,21 @@ const UploadForm = ({ presets, formats, onJobCreated }) => {
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onClick={() => fileInputRef.current?.click()}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              fileInputRef.current?.click();
+            }
+          }}
         >
           <input
             ref={fileInputRef}
             type="file"
             accept="video/*"
-            onChange={(e) => e.target.files[0] && handleFileSelect(e.target.files[0])}
+            onChange={(e) => e.target.files?.[0] && handleFileSelect(e.target.files[0])}
             style={{ display: 'none' }}
+            aria-label="Seleccionar archivo de video"
           />
           
           {selectedFile ? (
@@ -203,12 +210,12 @@ const UploadForm = ({ presets, formats, onJobCreated }) => {
                   <div className="file-info">
                     <p>Duración: {formatDuration(fileInfo.duration)}</p>
                     {fileInfo.video && (
-                      <p>Resolución: {fileInfo.video.width}x{fileInfo.video.height}</p>
+                      <>
+                        <p>Resolución: {fileInfo.video.width}x{fileInfo.video.height}</p>
+                        <p>Codec: {fileInfo.video.codec}</p>
+                      </>
                     )}
                     <p>Formato: {fileInfo.format}</p>
-                    {fileInfo.video && (
-                      <p>Codec: {fileInfo.video.codec}</p>
-                    )}
                   </div>
                 )}
               </div>
@@ -237,14 +244,15 @@ const UploadForm = ({ presets, formats, onJobCreated }) => {
             display: 'flex',
             alignItems: 'center',
             gap: '8px'
-          }}>
-            <span>⚠️</span>
-            <span>{uploadError}</span>
+          }}
+          role="alert"
+          >
+            ⚠️ {uploadError}
           </div>
         )}
 
         {/* Sugerencias de análisis */}
-        {analysisResults && analysisResults.suggestions && analysisResults.suggestions.length > 0 && (
+        {analysisResults?.suggestions && analysisResults.suggestions.length > 0 && (
           <div className="analysis-suggestions">
             <h3>💡 Recomendaciones de Optimización</h3>
             {analysisResults.suggestions.map((suggestion, index) => (
@@ -304,126 +312,88 @@ const UploadForm = ({ presets, formats, onJobCreated }) => {
               <h3>Opciones Personalizadas</h3>
               
               <div className="option-group">
-                <label>Formato de Salida:</label>
+                <label htmlFor="format-select">Formato de Salida:</label>
                 <select 
+                  id="format-select"
                   value={customOptions.format}
-                  onChange={(e) => setCustomOptions({...customOptions, format: e.target.value})}
+                  onChange={(e) => updateOption('format', e.target.value)}
                 >
-                  <option value="mp4">MP4</option>
-                  <option value="webm">WebM</option>
-                  <option value="avi">AVI</option>
-                  <option value="mov">MOV</option>
-                  <option value="mkv">MKV</option>
+                  {FORMATS.map(fmt => (
+                    <option key={fmt} value={fmt}>
+                      {fmt.toUpperCase()}
+                    </option>
+                  ))}
                 </select>
               </div>
 
               <div className="option-group">
-                <label>Resolución:</label>
+                <label htmlFor="resolution-select">Resolución:</label>
                 <select 
+                  id="resolution-select"
                   value={customOptions.resolution}
-                  onChange={(e) => setCustomOptions({...customOptions, resolution: e.target.value})}
+                  onChange={(e) => updateOption('resolution', e.target.value)}
                 >
-                  <option value="">Original</option>
-                  <option value="3840x2160">4K (3840x2160)</option>
-                  <option value="1920x1080">Full HD (1920x1080)</option>
-                  <option value="1280x720">HD (1280x720)</option>
-                  <option value="854x480">480p</option>
-                  <option value="640x360">360p</option>
+                  {RESOLUTIONS.map(res => (
+                    <option key={res.value} value={res.value}>
+                      {res.label}
+                    </option>
+                  ))}
                 </select>
               </div>
 
               <div className="option-row">
                 <div className="option-group">
-                  <label>Inicio (segundos):</label>
+                  <label htmlFor="start-time">Inicio (segundos):</label>
                   <input 
+                    id="start-time"
                     type="number"
                     min="0"
                     step="0.1"
                     value={customOptions.startTime}
-                    onChange={(e) => setCustomOptions({...customOptions, startTime: e.target.value})}
+                    onChange={(e) => updateOption('startTime', e.target.value)}
                     placeholder="0"
                   />
                 </div>
                 <div className="option-group">
-                  <label>Duración (segundos):</label>
+                  <label htmlFor="duration">Duración (segundos):</label>
                   <input 
+                    id="duration"
                     type="number"
                     min="0"
                     step="0.1"
                     value={customOptions.duration}
-                    onChange={(e) => setCustomOptions({...customOptions, duration: e.target.value})}
+                    onChange={(e) => updateOption('duration', e.target.value)}
                     placeholder="Completo"
                   />
                 </div>
               </div>
 
               <div className="option-group">
-                <label>Velocidad de Reproducción: {customOptions.speed}x</label>
+                <label htmlFor="speed-control">Velocidad de Reproducción: {customOptions.speed}x</label>
                 <input 
+                  id="speed-control"
                   type="range"
                   min="0.5"
                   max="3"
                   step="0.1"
                   value={customOptions.speed}
-                  onChange={(e) => setCustomOptions({...customOptions, speed: parseFloat(e.target.value)})}
+                  onChange={(e) => updateOption('speed', parseFloat(e.target.value))}
                 />
               </div>
 
               {/* Checkboxes */}
               <div className="checkboxes-group">
-                <label className="checkbox-label">
-                  <input 
-                    type="checkbox"
-                    checked={customOptions.removeAudio}
-                    onChange={(e) => setCustomOptions({...customOptions, removeAudio: e.target.checked})}
-                  />
-                  Eliminar Audio
-                </label>
-                
-                <label className="checkbox-label">
-                  <input 
-                    type="checkbox"
-                    checked={customOptions.calculateMetrics}
-                    onChange={(e) => setCustomOptions({...customOptions, calculateMetrics: e.target.checked})}
-                  />
-                  Calcular Métricas de Calidad
-                </label>
-                
-                <label className="checkbox-label">
-                  <input 
-                    type="checkbox"
-                    checked={customOptions.twoPass}
-                    onChange={(e) => setCustomOptions({...customOptions, twoPass: e.target.checked})}
-                  />
-                  Codificación de Dos Pasadas
-                </label>
-                
-                <label className="checkbox-label">
-                  <input 
-                    type="checkbox"
-                    checked={customOptions.normalizeAudio}
-                    onChange={(e) => setCustomOptions({...customOptions, normalizeAudio: e.target.checked})}
-                  />
-                  Normalizar Audio
-                </label>
-                
-                <label className="checkbox-label">
-                  <input 
-                    type="checkbox"
-                    checked={customOptions.denoise}
-                    onChange={(e) => setCustomOptions({...customOptions, denoise: e.target.checked})}
-                  />
-                  Reducir Ruido
-                </label>
-                
-                <label className="checkbox-label">
-                  <input 
-                    type="checkbox"
-                    checked={customOptions.stabilize}
-                    onChange={(e) => setCustomOptions({...customOptions, stabilize: e.target.checked})}
-                  />
-                  Estabilizar Video
-                </label>
+                {CHECKBOX_OPTIONS.map(({ key, label }) => (
+                  <label key={key} className="checkbox-label">
+                    <input 
+                      type="checkbox"
+                      checked={customOptions[key]}
+                      onChange={(e) => updateOption(key, e.target.checked)}
+                      aria-label={label}
+                    />
+                    {label}
+                  </label>
+                ))}
               </div>
             </div>
           </div>
@@ -454,4 +424,11 @@ const UploadForm = ({ presets, formats, onJobCreated }) => {
   );
 };
 
+UploadForm.propTypes = {
+  presets: PropTypes.object,
+  formats: PropTypes.array,
+  onJobCreated: PropTypes.func
+};
+
 export default UploadForm;
+

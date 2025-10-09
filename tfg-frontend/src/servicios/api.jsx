@@ -36,15 +36,19 @@ export const api = {
   
   fetchJob: (jobId) => request(`/api/job/${jobId}`),
   
+  // CORREGIDO: Cambiar /api/upload a /api/convert
   createJob: async (formData) => {
     try {
-      const response = await fetch(`${BASE_URL}/api/upload`, {
+      console.log('📤 Sending conversion request...');
+      const response = await fetch(`${BASE_URL}/api/convert`, {
         method: 'POST',
         body: formData
       });
-      return handleResponse(response);
+      const data = await handleResponse(response);
+      console.log('✅ Conversion request successful:', data);
+      return data;
     } catch (error) {
-      console.error('API Error (createJob):', error);
+      console.error('❌ API Error (createJob):', error);
       throw error;
     }
   },

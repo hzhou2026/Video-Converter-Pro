@@ -116,33 +116,100 @@ const redis = new Redis(config.redisUrl);
 const videoQueue = new Queue('video-conversion', config.redisUrl);
 const subscriber = new Redis(config.redisUrl);
 
-// Suscribirse a eventos de progreso
-subscriber.subscribe('job:progress', (err, count) => {
-  if (err) {
-    logger.error('Failed to subscribe to job:progress', err);
-  }
-});
-
 subscriber.on('message', async (channel, message) => {
   if (channel === 'job:progress') {
     const data = JSON.parse(message);
 
-    // Actualizar jobManager local
-    jobManager.updateJob(data.jobId, {
-      status: 'processing',
-      progress: data.progress,
-      currentTime: data.currentTime,
-      fps: data.fps
-    });
+    // jobManager local
+    const job = jobManager.getJob(data.jobId);
+    if (job) {
+      jobManager.updateJob(data.jobId, {
+        status: 'processing',
+        progress: data.progress,
+        currentTime: data.currentTime,
+        fps: data.fps,
+        speed: data.speed
+      });
+    }
 
-    // Emitir a través de Socket.IO
+    // Emitir a través de Socket.IO a TODOS los clientes suscritos
     io.to(data.jobId).emit('job:update', {
+      id: data.jobId,
       jobId: data.jobId,
       status: 'processing',
       progress: data.progress,
       currentTime: data.currentTime,
-      fps: data.fps
+      fps: data.fps,
+      speed: data.speed
     });
+  }
+
+  // Escuchar evento de completado
+  if (channel === 'job:completed') {
+    const data = JSON.parse(message);
+    const job = jobManager.getJob(data.jobId);
+    if (job) {
+      jobManager.updateJob(data.jobId, {
+        status: 'completed',
+        progress: 100,
+        result: data.result,
+        completedAt: Date.now()
+      });
+
+      io.to(data.jobId).emit('job:update', {
+        id: data.jobId,
+        jobId: data.jobId,
+        status: 'completed',
+        progress: 100,
+        result: data.result
+      });
+    }
+  }
+
+  // Escuchar evento de error
+  if (channel === 'job:failed') {
+    const data = JSON.parse(message);
+    const job = jobManager.getJob(data.jobId);
+    if (job) {
+      jobManager.updateJob(data.jobId, {
+        status: 'failed',
+        progress: 0,
+        error: data.error
+      });
+
+      io.to(data.jobId).emit('job:update', {
+        id: data.jobId,
+        jobId: data.jobId,
+        status: 'failed',
+        progress: 0,
+        error: data.error
+      });
+    }
+  }
+});
+
+// SUSCRIBIRSE A TODOS LOS CANALES NECESARIOS
+subscriber.subscribe('job:progress', (err, count) => {
+  if (err) {
+    logger.error('Failed to subscribe to job:progress', err);
+  } else {
+    logger.info('Subscribed to job:progress channel');
+  }
+});
+
+subscriber.subscribe('job:completed', (err, count) => {
+  if (err) {
+    logger.error('Failed to subscribe to job:completed', err);
+  } else {
+    logger.info('Subscribed to job:completed channel');
+  }
+});
+
+subscriber.subscribe('job:failed', (err, count) => {
+  if (err) {
+    logger.error('Failed to subscribe to job:failed', err);
+  } else {
+    logger.info('Subscribed to job:failed channel');
   }
 });
 
@@ -686,11 +753,215 @@ async function handleError(jobId, err) {
   throw errorObj;
 }
 
-const convertVideoWithProgress = async (jobId, inputPath, outputPath, options = {}, bullJob = null) => {
+// Verificar si el archivo existe y está accesible
+const waitForFile = async (filePath, maxAttempts = 10, delayMs = 500) => {
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      await fs.access(filePath, fsSync.constants.R_OK);
+      const stats = await fs.stat(filePath);
+      if (stats.size > 0) {
+        return true;
+      }
+    } catch (err) {
+      logger.warn(`Attempt ${i + 1} to access file failed: ${err.message}`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+  throw new Error(`File not accessible after ${maxAttempts} attempts: ${filePath}`);
+};
+
+// Convertir timemark (HH:MM:SS.mmm) a segundos
+function timemarkToSeconds(timemark) {
+  if (!timemark || timemark === 'N/A' || timemark === '00:00:00.00') return 0;
+
+  // Manejar timemarks negativos
+  const isNegative = timemark.startsWith('-');
+  const cleanTimemark = timemark.replace('-', '');
+
+  try {
+    const parts = cleanTimemark.split(':');
+    if (parts.length !== 3) return 0;
+
+    const hours = parseInt(parts[0]) || 0;
+    const minutes = parseInt(parts[1]) || 0;
+    const seconds = parseFloat(parts[2]) || 0;
+
+    const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+    return isNegative ? 0 : totalSeconds;
+  } catch (error) {
+    logger.warn(`Error parsing timemark: ${timemark}`, error);
+    return 0;
+  }
+}
+
+// Obtener duración del video con ffprobe
+const getVideoDuration = async (inputPath) => {
+  try {
+    // Esperar a que el archivo esté disponible
+    await waitForFile(inputPath);
+    
+    return new Promise((resolve, reject) => {
+      ffmpeg.ffprobe(inputPath, (err, metadata) => {
+        if (err) {
+          logger.error(` Could not get duration for ${inputPath}:`, err.message);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        } else {
+          const duration = metadata.format.duration;
+          if (!duration || duration <= 0) {
+            logger.warn(` Invalid duration detected: ${duration}s`);
+            reject(new Error('Invalid video duration'));
+          } else {
+            resolve(duration);
+          }
+        }
+      });
+    });
+  } catch (error) {
+    logger.error(`Failed to verify or probe file ${inputPath}:`, error.message);
+    throw error;
+  }
+};
+
+// ===================== CONVERSIÓN CON PROGRESO MEJORADO =====================
+
+function handleProgressEvent({
+  jobId,
+  progress,
+  totalDuration,
+  lastProgress,
+  lastLoggedProgress,
+  startTime,
+  redis,
+  jobManager,
+  io
+}) {
+  // timemark actual / duración total
+  const currentTimeSeconds = timemarkToSeconds(progress.timemark);
+
+  if (currentTimeSeconds <= 0 || !totalDuration || totalDuration <= 0) {
+    return { lastProgress, lastLoggedProgress };
+  }
+
+  // Calcular porcentaje: (tiempo actual / duración total)
+  let currentProgress = Math.round((currentTimeSeconds / totalDuration) * 100);
+
+  // Asegurar que esté entre 0 y 99
+  currentProgress = Math.max(0, Math.min(99, currentProgress));
+
+  // Solo actualizar si hay cambio 
+  if (currentProgress === lastProgress) {
+    return { lastProgress, lastLoggedProgress };
+  }
+
+  lastProgress = currentProgress;
+
+  // Log detallado cada 5% o en ciertos puntos clave
+  if (
+    currentProgress !== lastLoggedProgress &&
+    (currentProgress % 5 === 0 || currentProgress > 95)
+  ) {
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    const eta =
+      currentProgress > 0
+        ? Math.round((elapsed / currentProgress) * (100 - currentProgress))
+        : 0;
+
+    logger.info(
+      `Job ${jobId} - ${currentProgress}% | ` +
+        `Time: ${progress.timemark}/${formatDuration(totalDuration)} | ` +
+        `FPS: ${progress.currentFps || 0} | ` +
+        `Speed: ${
+          progress.currentKbps
+            ? (progress.currentKbps / 1000).toFixed(2) + "x"
+            : "N/A"
+        } | ` +
+        `ETA: ${formatDuration(eta)}`
+    );
+    lastLoggedProgress = currentProgress;
+  }
+
+  const progressData = {
+    status: "processing",
+    progress: currentProgress,
+    currentTime: progress.timemark || "00:00:00",
+    totalTime: formatDuration(totalDuration),
+    fps: progress.currentFps || 0,
+    speed: progress.currentKbps
+      ? `${(progress.currentKbps / 1000).toFixed(2)}x`
+      : "0x",
+    updatedAt: Date.now(),
+  };
+
+  // Guardar en Redis
+  redis.hset(`job:${jobId}`, progressData);
+
+  // Actualizar jobManager local
+  jobManager.updateJob(jobId, progressData);
+
+  // Publicar evento
+  redis.publish(
+    "job:progress",
+    JSON.stringify({
+      jobId,
+      ...progressData,
+    })
+  );
+
+  // Emitir via Socket.IO
+  io.to(jobId).emit("job:update", {
+    id: jobId,
+    jobId: jobId,
+    ...progressData,
+  });
+
+  return { lastProgress, lastLoggedProgress };
+}
+
+async function handleJobError(jobId, err, redis, jobManager, io, reject) {
+  logger.error(`Job ${jobId} failed:`, err);
+
+  const errorData = {
+    status: "failed",
+    progress: 0,
+    error: err.message || String(err),
+  };
+
+  // Actualizar Redis
+  await redis.hset(`job:${jobId}`, errorData);
+
+  // Actualizar jobManager
+  jobManager.updateJob(jobId, errorData);
+
+  // Publicar evento de error
+  await redis.publish(
+    "job:failed",
+    JSON.stringify({
+      jobId,
+      error: err.message || String(err),
+    })
+  );
+
+  // Emitir via Socket.IO
+  io.to(jobId).emit("job:update", {
+    id: jobId,
+    jobId: jobId,
+    ...errorData,
+  });
+
+  reject(err instanceof Error ? err : new Error(String(err)));
+}
+
+const convertVideoWithProgress = async (
+  jobId,
+  inputPath,
+  outputPath,
+  options = {},
+  bullJob = null
+) => {
   const {
-    preset = 'balanced',
+    preset = "balanced",
     resolution = null,
-    format = 'mp4',
+    format = "mp4",
     startTime = null,
     duration = null,
     removeAudio = false,
@@ -705,73 +976,262 @@ const convertVideoWithProgress = async (jobId, inputPath, outputPath, options = 
     speed = 1.0,
     crop = null,
     rotate = null,
-    flip = null
+    flip = null,
   } = options;
 
-  const presetConfig = PRESETS[preset] || PRESETS['balanced'];
+  // Variables de progreso
+  async function getValidatedDuration(inputPath, startTime, duration, jobId) {
+    const fileExists = await fs.access(inputPath)
+      .then(() => true)
+      .catch(() => false);
+    if (!fileExists) {
+      throw new Error(`Input file does not exist: ${inputPath}`);
+    }
+    let totalDuration = await getVideoDuration(inputPath);
+    if (duration !== null && duration > 0) {
+      totalDuration = Math.min(duration, totalDuration - (startTime || 0));
+    } else if (startTime !== null && startTime > 0) {
+      totalDuration = totalDuration - startTime;
+    }
+    return totalDuration;
+  }
+
+  let totalDuration;
+  try {
+    totalDuration = await getValidatedDuration(inputPath, startTime, duration, jobId);
+  } catch (error) {
+    logger.error(`Job ${jobId} - Failed to get video duration:`, error);
+    await redis.hset(`job:${jobId}`, {
+      status: "failed",
+      error: `Failed to read input file: ${error.message}`,
+    });
+    jobManager.updateJob(jobId, {
+      status: "failed",
+      error: `Failed to read input file: ${error.message}`,
+    });
+    await redis.publish(
+      "job:failed",
+      JSON.stringify({
+        jobId,
+        error: `Failed to read input file: ${error.message}`,
+      })
+    );
+    throw new Error(`Cannot process video: ${error.message}`);
+  }
+
+  const presetConfig = PRESETS[preset] || PRESETS["balanced"];
   let command = ffmpeg(inputPath);
 
-  if (startTime !== null) {
-    command.setStartTime(startTime);
-  }
-  if (duration !== null) {
-    command.setDuration(duration);
+  // Aplicar opciones al comando
+  function applyCommandOptions(command) {
+    if (startTime !== null) command.setStartTime(startTime);
+    if (duration !== null) command.setDuration(duration);
+    const videoFilters = buildVideoFilters({
+      speed,
+      removeAudio,
+      denoise,
+      stabilize,
+      crop,
+      rotate,
+      flip,
+      watermark,
+    });
+    if (videoFilters.length > 0) command.videoFilters(videoFilters);
+    if (subtitles && fsSync.existsSync(subtitles)) {
+      command.outputOptions(["-vf", `subtitles=${subtitles}`]);
+    }
+    if (presetConfig.videoCodec) command.videoCodec(presetConfig.videoCodec);
+    applyAudioOptions(command, {
+      removeAudio,
+      presetConfig,
+      normalizeAudio,
+      speed,
+    });
+    if (resolution || presetConfig.resolution) {
+      command.size(resolution || presetConfig.resolution);
+    }
+    if (presetConfig.fps) command.fps(presetConfig.fps);
+    const outputOptions = buildOutputOptions({
+      twoPass,
+      presetConfig,
+      jobId,
+      customOptions,
+    });
+    command.outputOptions(outputOptions);
+    command.toFormat(format);
   }
 
-  const videoFilters = buildVideoFilters({ speed, removeAudio, denoise, stabilize, crop, rotate, flip, watermark });
-  if (videoFilters.length > 0) {
-    command.videoFilters(videoFilters);
+  applyCommandOptions(command);
+
+  if (twoPass && presetConfig.videoCodec === "libx264") {
+    try {
+      await runTwoPass(inputPath, presetConfig, jobId);
+    } catch (error) {
+      logger.warn(
+        `Two-pass encoding failed, continuing with single pass:`,
+        error.message
+      );
+    }
   }
 
-  if (subtitles && fsSync.existsSync(subtitles)) {
-    command.outputOptions(['-vf', `subtitles=${subtitles}`]);
+  // Finalizar trabajo
+  async function finalizeJob({
+    jobId,
+    startTimeMs,
+    inputPath,
+    outputPath,
+    calculateMetrics,
+    resolve,
+    totalDuration,
+  }) {
+    if (progressUpdateInterval) clearInterval(progressUpdateInterval);
+    const totalTime = Math.round((Date.now() - startTimeMs) / 1000);
+    logger.info(
+      `Job ${jobId} - Encoding completed in ${formatDuration(totalTime)}`
+    );
+    let metrics = null;
+    if (calculateMetrics) {
+      logger.info(`Job ${jobId} - Calculating quality metrics...`);
+      try {
+        metrics = await calculateAdvancedMetrics(inputPath, outputPath);
+      } catch (err) {
+        logger.warn(`Failed to calculate metrics:`, err.message);
+      }
+    }
+    const outputInfo = await getMediaInfo(outputPath);
+    const outputStats = await fs.stat(outputPath);
+    const processingTime = Date.now() - jobManager.getJob(jobId).createdAt;
+    const result = {
+      success: true,
+      outputPath,
+      outputSize: outputStats.size,
+      outputSizeFormatted: formatSize(outputStats.size),
+      outputInfo,
+      metrics,
+      processingTime,
+      processingTimeFormatted: formatDuration(processingTime / 1000),
+    };
+    await redis.hset(`job:${jobId}`, {
+      status: "completed",
+      progress: 100,
+      result: JSON.stringify(result),
+      completedAt: Date.now(),
+    });
+    jobManager.updateJob(jobId, {
+      status: "completed",
+      progress: 100,
+      result,
+      completedAt: Date.now(),
+    });
+    await redis.publish(
+      "job:completed",
+      JSON.stringify({
+        jobId,
+        result,
+      })
+    );
+    io.to(jobId).emit("job:update", {
+      id: jobId,
+      jobId: jobId,
+      status: "completed",
+      progress: 100,
+      result,
+    });
+    logger.info(
+      `Job ${jobId} completed successfully in ${formatDuration(
+        totalTime
+      )}`
+    );
+    resolve(result);
   }
 
-  if (presetConfig.videoCodec) {
-    command.videoCodec(presetConfig.videoCodec);
+  // Manejar errores del trabajo
+  async function handleJobErrorWrapper(jobId, err, reject) {
+    if (progressUpdateInterval) clearInterval(progressUpdateInterval);
+    await handleJobError(jobId, err, redis, jobManager, io, reject);
   }
 
-  applyAudioOptions(command, { removeAudio, presetConfig, normalizeAudio, speed });
-
-  if (resolution || presetConfig.resolution) {
-    command.size(resolution || presetConfig.resolution);
-  }
-  if (presetConfig.fps) {
-    command.fps(presetConfig.fps);
-  }
-
-  if (twoPass && presetConfig.videoCodec === 'libx264') {
-    await runTwoPass(inputPath, presetConfig, jobId);
-  }
-
-  const outputOptions = buildOutputOptions({ twoPass, presetConfig, jobId, customOptions });
-  command.outputOptions(outputOptions);
-  command.toFormat(format);
-
+  let progressUpdateInterval = null;
   return new Promise((resolve, reject) => {
+    let lastProgress = -1;
+    let lastLoggedProgress = -1;
+    const startTimeMs = Date.now();
+
     command
-      .on('codecData', (data) => {
-        logger.info(`Job ${jobId} - Total duration: ${data.duration}`);
-      })
-      .on('progress', (progress) => {
-        handleProgress(jobId, progress).catch(logger.error);
-      })
-      .on('end', async () => {
+      .on("progress", async (progress) => {
         try {
-          const result = await handleEnd({ jobId, inputPath, outputPath, calculateMetrics });
-          resolve(result);
+          const result = handleProgressEvent({
+            jobId,
+            progress,
+            totalDuration,
+            lastProgress,
+            lastLoggedProgress,
+            startTime: startTimeMs,
+            redis,
+            jobManager,
+            io,
+          });
+          lastProgress = result.lastProgress;
+          lastLoggedProgress = result.lastLoggedProgress;
         } catch (error) {
-          reject(new Error(`Failed to finalize job ${jobId}: ${error.message}`));
+          logger.error(`Error updating progress for job ${jobId}:`, error);
         }
       })
-      .on('error', async (err) => {
+      .on("end", async () => {
         try {
-          await handleError(jobId, err);
-        } catch (errorObj) {
-          reject(errorObj instanceof Error ? errorObj : new Error(String(errorObj)));
+          await finalizeJob({
+            jobId,
+            startTimeMs,
+            inputPath,
+            outputPath,
+            calculateMetrics,
+            resolve,
+            totalDuration,
+          });
+        } catch (error) {
+          logger.error(`Error finalizing job ${jobId}:`, error);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      })
+      .on("error", async (err) => {
+        try {
+          await handleJobErrorWrapper(jobId, err, reject);
+        } catch (error) {
+          logger.error(`Error handling job ${jobId} failure:`, error);
+          reject(error instanceof Error ? error : new Error(String(error)));
         }
       })
       .save(outputPath);
+
+    progressUpdateInterval = setInterval(async () => {
+      try {
+        const jobData = await redis.hgetall(`job:${jobId}`);
+        if (jobData && jobData.status === "processing") {
+          const lastUpdate = parseInt(jobData.updatedAt || 0);
+          const now = Date.now();
+
+          if (now - lastUpdate > 20000) {
+            logger.warn(
+              `Job ${jobId} seems stalled (last update: ${Math.round(
+                (now - lastUpdate) / 1000
+              )}s ago)`
+            );
+
+            io.to(jobId).emit("job:warning", {
+              id: jobId,
+              jobId: jobId,
+              message: "Processing appears to be stalled",
+              lastUpdate: new Date(lastUpdate).toISOString(),
+            });
+          }
+        }
+      } catch (error) {
+        logger.error(
+          `Error in progress interval for job ${jobId}:`,
+          error
+        );
+      }
+    }, 10000);
   });
 };
 
@@ -852,6 +1312,43 @@ app.get('/api/codecs', async (req, res) => {
   } catch (error) {
     logger.error('Failed to get codecs:', error);
     res.status(500).json({ error: 'Failed to get codecs' });
+  }
+});
+
+app.get('/api/job/:jobId', async (req, res) => {
+  try {
+    const jobId = req.params.jobId;
+
+    // Primero intentar desde jobManager
+    let job = jobManager.getJob(jobId);
+
+    // Si no está en memoria, buscar en Redis
+    if (!job) {
+      const jobData = await redis.hgetall(`job:${jobId}`);
+      if (jobData && Object.keys(jobData).length > 0) {
+        job = {
+          id: jobId,
+          status: jobData.status,
+          progress: parseInt(jobData.progress || 0),
+          currentTime: jobData.currentTime,
+          fps: parseFloat(jobData.fps || 0),
+          speed: jobData.speed,
+          error: jobData.error,
+          result: jobData.result ? JSON.parse(jobData.result) : null,
+          createdAt: parseInt(jobData.createdAt || Date.now()),
+          updatedAt: parseInt(jobData.updatedAt || Date.now())
+        };
+      }
+    }
+
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    res.json(job);
+  } catch (error) {
+    logger.error('Error fetching job:', error);
+    res.status(500).json({ error: 'Failed to fetch job' });
   }
 });
 
@@ -981,6 +1478,17 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
       userId: req.headers['x-user-id'] || 'anonymous'
     });
 
+    logger.info(`Job created: ${job.id} for file: ${req.file.originalname}`);
+
+    // Guardar en Redis
+    await redis.hset(`job:${job.id}`, {
+      status: 'queued',
+      progress: 0,
+      inputName: req.file.originalname,
+      outputName: outputFilename,
+      createdAt: Date.now()
+    });
+
     // Agregar job a la cola de procesamiento
     await videoQueue.add({
       jobId: job.id,
@@ -1011,6 +1519,8 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
     res.json({
       jobId: job.id,
       status: 'queued',
+      inputName: req.file.originalname,
+      outputName: outputFilename,
       message: 'Video conversion job created successfully'
     });
 
@@ -1064,17 +1574,6 @@ app.post('/api/batch-convert', upload.array('videos', 10), async (req, res) => {
     logger.error('Batch conversion error:', error);
     res.status(500).json({ error: 'Failed to start batch conversion', details: error.message });
   }
-});
-
-// Obtener estado de un job
-app.get('/api/job/:jobId', (req, res) => {
-  const job = jobManager.getJob(req.params.jobId);
-
-  if (!job) {
-    return res.status(404).json({ error: 'Job not found' });
-  }
-
-  res.json(job);
 });
 
 // Obtener todos los jobs
@@ -1217,15 +1716,40 @@ app.post('/api/compare', async (req, res) => {
 // ===================== SOCKET.IO =====================
 
 io.on('connection', (socket) => {
-  logger.info('Client connected:', socket.id);
+  logger.info(`Client connected: ${socket.id}`);
 
-  socket.on('subscribe', (jobId) => {
-    socket.join(jobId);
-    logger.info(`Client ${socket.id} subscribed to job ${jobId}`);
+  socket.on('subscribe', async (jobId) => {
+    try {
+      socket.join(jobId);
+      logger.info(`Client ${socket.id} subscribed to job ${jobId}`);
 
-    const job = jobManager.getJob(jobId);
-    if (job) {
-      socket.emit('job:update', job);
+      // Enviar estado actual del job inmediatamente
+      const job = jobManager.getJob(jobId);
+      if (job) {
+        socket.emit('job:update', {
+          id: job.id,
+          jobId: job.id,
+          ...job
+        });
+      } else {
+        // Intentar obtener de Redis si no está en jobManager
+        const jobData = await redis.hgetall(`job:${jobId}`);
+        if (jobData && Object.keys(jobData).length > 0) {
+          socket.emit('job:update', {
+            id: jobId,
+            jobId: jobId,
+            status: jobData.status,
+            progress: parseInt(jobData.progress || 0),
+            currentTime: jobData.currentTime,
+            fps: parseFloat(jobData.fps || 0),
+            speed: jobData.speed,
+            error: jobData.error,
+            result: jobData.result ? JSON.parse(jobData.result) : null
+          });
+        }
+      }
+    } catch (error) {
+      logger.error(`Error subscribing to job ${jobId}:`, error);
     }
   });
 
@@ -1235,7 +1759,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    logger.info('Client disconnected:', socket.id);
+    logger.info(`Client disconnected: ${socket.id}`);
   });
 });
 
@@ -1323,3 +1847,4 @@ server.listen(config.port, () => {
   logger.info(`Máximo de trabajos concurrentes: ${config.maxConcurrentJobs}`);
   logger.info(`Tipo de almacenamiento: ${config.storageType}`);
 });
+
