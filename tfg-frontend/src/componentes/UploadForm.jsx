@@ -20,7 +20,7 @@ const DEFAULT_OPTIONS = {
   normalizeAudio: false,
   denoise: false,
   stabilize: false,
-  speed: 1.0,
+  speed: 1,
   crop: '',
   rotate: 0,
   flip: ''
@@ -49,7 +49,7 @@ const formatFileSize = (bytes) => {
   const k = 1024;
   const sizes = ['Bytes', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  return Number.parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
 const formatDuration = (seconds) => {
@@ -387,7 +387,7 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
                   max="3"
                   step="0.1"
                   value={customOptions.speed}
-                  onChange={(e) => updateOption('speed', parseFloat(e.target.value))}
+                  onChange={(e) => updateOption('speed', Number.parseFloat(e.target.value))}
                 />
               </div>
 

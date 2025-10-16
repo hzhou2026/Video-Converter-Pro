@@ -37,7 +37,6 @@ const config = {
   maxConcurrentJobs: Number.parseInt(process.env.MAX_CONCURRENT_JOBS) || 3,
   redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
   enableCache: process.env.ENABLE_CACHE !== 'false',
-  enableMetrics: process.env.ENABLE_METRICS !== 'false',
   jwtSecret: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
   storageType: process.env.STORAGE_TYPE || 'local', // 'local' o 's3'
   s3Bucket: process.env.S3_BUCKET,
@@ -80,13 +79,13 @@ app.use(express.urlencoded({ extended: true }));
 // Limitador de tasa
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 100, // limite cada IP a 100 requests por ventana
+  max: 20, // limite cada IP a 20 requests por ventana
   message: 'Demasiadas solicitudes de esta IP, por favor intente de nuevo más tarde.'
 });
 
 const uploadLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hora
-  max: 20, // limite cada IP a 20 uploads por hora
+  max: 5, // limite cada IP a 5 uploads por hora
   message: 'Límite de carga excedido, por favor intente de nuevo más tarde.'
 });
 
@@ -296,7 +295,8 @@ const PRESETS = {
     crf: 15,
     preset: 'veryslow',
     audioBitrate: '320k',
-    description: 'Ultra quality for archival or professional use'
+    description: 'Calidad ultra para archivos importantes',
+    allowCustomOptions: true
   },
   'high-quality': {
     videoCodec: 'libx264',
@@ -304,7 +304,8 @@ const PRESETS = {
     crf: 18,
     preset: 'slow',
     audioBitrate: '256k',
-    description: 'High quality for important videos'
+    description: 'Calidad alta para la mayoría de los usos',
+    allowCustomOptions: true
   },
   'balanced': {
     videoCodec: 'libx264',
@@ -312,7 +313,8 @@ const PRESETS = {
     crf: 23,
     preset: 'medium',
     audioBitrate: '192k',
-    description: 'Balanced quality and file size'
+    description: 'Calidad equilibrada y tamaño de archivo',
+    allowCustomOptions: true
   },
   'fast': {
     videoCodec: 'libx264',
@@ -320,7 +322,8 @@ const PRESETS = {
     crf: 28,
     preset: 'fast',
     audioBitrate: '128k',
-    description: 'Fast processing with acceptable quality'
+    description: 'Rápido con calidad decente',
+    allowCustomOptions: true
   },
 
   // Presets avanzados
@@ -330,7 +333,8 @@ const PRESETS = {
     crf: 30,
     preset: 6,
     audioBitrate: '128k',
-    description: 'AV1 codec for maximum compression'
+    description: 'AV1 codec para mejor compresión que H.264 y H.265',
+    allowCustomOptions: true
   },
   'hevc': {
     videoCodec: 'libx265',
@@ -338,7 +342,8 @@ const PRESETS = {
     crf: 28,
     preset: 'medium',
     audioBitrate: '128k',
-    description: 'H.265/HEVC for better compression than H.264'
+    description: 'H.265/HEVC para mejor compresión que H.264',
+    allowCustomOptions: true
   },
   'vp9': {
     videoCodec: 'libvpx-vp9',
@@ -346,7 +351,8 @@ const PRESETS = {
     crf: 31,
     preset: 'good',
     audioBitrate: '128k',
-    description: 'VP9 for web compatibility'
+    description: 'VP9 mayor compabilidad web',
+    allowCustomOptions: true
   },
 
   // Presets para redes sociales
@@ -358,8 +364,9 @@ const PRESETS = {
     audioBitrate: '256k',
     resolution: '3840x2160',
     fps: 30,
-    description: 'Optimized for YouTube 4K uploads',
-    extraOptions: ['-movflags', '+faststart', '-pix_fmt', 'yuv420p']
+    description: 'Optimizado para YouTube 4K',
+    extraOptions: ['-movflags', '+faststart', '-pix_fmt', 'yuv420p'],
+    allowCustomOptions: true
   },
   'youtube-1080p': {
     videoCodec: 'libx264',
@@ -369,8 +376,9 @@ const PRESETS = {
     audioBitrate: '192k',
     resolution: '1920x1080',
     fps: 30,
-    description: 'Optimized for YouTube 1080p',
-    extraOptions: ['-movflags', '+faststart', '-pix_fmt', 'yuv420p']
+    description: 'Optimizado para YouTube 1080p',
+    extraOptions: ['-movflags', '+faststart', '-pix_fmt', 'yuv420p'],
+    allowCustomOptions: true
   },
   'instagram': {
     videoCodec: 'libx264',
@@ -381,8 +389,9 @@ const PRESETS = {
     resolution: '1080x1080',
     fps: 30,
     maxDuration: 60,
-    description: 'Square format for Instagram posts',
-    extraOptions: ['-movflags', '+faststart']
+    description: 'Formato cuadrado para publicaciones de Instagram',
+    extraOptions: ['-movflags', '+faststart'],
+    allowCustomOptions: true
   },
   'instagram-reel': {
     videoCodec: 'libx264',
@@ -393,8 +402,9 @@ const PRESETS = {
     resolution: '1080x1920',
     fps: 30,
     maxDuration: 90,
-    description: 'Vertical format for Instagram Reels',
-    extraOptions: ['-movflags', '+faststart']
+    description: 'Formato vertical para Reels de Instagram',
+    extraOptions: ['-movflags', '+faststart'],
+    allowCustomOptions: true
   },
   'tiktok': {
     videoCodec: 'libx264',
@@ -405,8 +415,9 @@ const PRESETS = {
     resolution: '1080x1920',
     fps: 30,
     maxDuration: 180,
-    description: 'Optimized for TikTok',
-    extraOptions: ['-movflags', '+faststart']
+    description: 'Optimizado para TikTok',
+    extraOptions: ['-movflags', '+faststart'],
+    allowCustomOptions: true
   },
   'twitter': {
     videoCodec: 'libx264',
@@ -416,8 +427,9 @@ const PRESETS = {
     audioBitrate: '128k',
     maxSize: '512MB',
     maxDuration: 140,
-    description: 'Optimized for Twitter/X',
-    extraOptions: ['-movflags', '+faststart']
+    description: 'Optimizado para Twitter/X',
+    extraOptions: ['-movflags', '+faststart'],
+    allowCustomOptions: true
   },
 
   // Presets especializados
@@ -427,7 +439,7 @@ const PRESETS = {
     crf: 23,
     preset: 'medium',
     audioBitrate: '128k',
-    description: 'Optimized for web streaming',
+    description: 'Optimizado para streaming web',
     extraOptions: [
       '-movflags', '+faststart',
       '-profile:v', 'main',
@@ -435,7 +447,8 @@ const PRESETS = {
       '-g', '48',
       '-keyint_min', '48',
       '-sc_threshold', '0'
-    ]
+    ],
+    allowCustomOptions: true
   },
   'hls': {
     videoCodec: 'libx264',
@@ -443,22 +456,24 @@ const PRESETS = {
     crf: 23,
     preset: 'medium',
     audioBitrate: '128k',
-    description: 'HLS streaming format',
+    description: 'format HLS para streaming adaptativo',
     outputFormat: 'hls',
     extraOptions: [
       '-hls_time', '10',
       '-hls_list_size', '0',
       '-hls_segment_filename', 'segment_%03d.ts'
-    ]
+    ],
+    allowCustomOptions: true
   },
   'gif': {
-    description: 'Convert to animated GIF',
+    description: 'Convertir a GIF animado',
     outputFormat: 'gif',
     fps: 10,
     resolution: '480x?',
     extraOptions: [
       '-vf', 'fps=10,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse'
-    ]
+    ],
+    allowCustomOptions: true
   },
   'mobile': {
     videoCodec: 'libx264',
@@ -467,8 +482,191 @@ const PRESETS = {
     preset: 'fast',
     audioBitrate: '96k',
     resolution: '720x?',
-    description: 'Optimized for mobile devices',
-    extraOptions: ['-profile:v', 'baseline', '-level', '3.0']
+    description: 'Optimizado para dispositivos móviles',
+    extraOptions: ['-profile:v', 'baseline', '-level', '3.0'],
+    allowCustomOptions: true
+  },
+
+  // Presets para videos raw/sin compresión
+  'raw-uncompressed': {
+    videoCodec: 'rawvideo',
+    audioCodec: 'pcm_s16le',
+    description: 'Video sin comprimir en contenedor AVI (archivos ENORMES - solo para clips cortos)',
+    outputFormat: 'avi',
+    maxDuration: 60,
+    extraOptions: [
+      '-pix_fmt', 'yuv420p',
+      '-vtag', 'I420'
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-uncompressed': {
+    videoCodec: 'rawvideo',
+    audioCodec: 'pcm_s16le',
+    description: 'AVI sin comprimir con YUV420P (mejor compatibilidad que RGB)',
+    outputFormat: 'avi',
+    maxDuration: 60,
+    extraOptions: [
+      '-pix_fmt', 'yuv420p',
+      '-vtag', 'I420'
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-uncompressed-rgb': {
+    videoCodec: 'rawvideo',
+    audioCodec: 'pcm_s16le',
+    description: 'AVI sin comprimir en RGB24 (archivos muy grandes)',
+    outputFormat: 'avi',
+    maxDuration: 30,
+    extraOptions: [
+      '-pix_fmt', 'rgb24',
+      '-vtag', 'DIB '
+    ],
+    allowCustomOptions: false
+  },
+
+  // LOSSLESS - Mejores opciones
+  'avi-lossless': {
+    videoCodec: 'huffyuv',
+    audioCodec: 'pcm_s16le',
+    description: 'AVI con compresión lossless HuffYUV (~50% del tamaño raw)',
+    outputFormat: 'avi',
+    extraOptions: [
+      '-pix_fmt', 'yuv422p',
+      '-pred', 'left' 
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-ffv1': {
+    videoCodec: 'ffv1',
+    audioCodec: 'pcm_s16le',
+    description: 'AVI con FFV1 (mejor compresión lossless, ideal para archivo)',
+    outputFormat: 'avi',
+    extraOptions: [
+      '-level', '3',
+      '-coder', '1',
+      '-context', '1',
+      '-g', '1',
+      '-slices', '24',
+      '-slicecrc', '1'
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-utvideo': {
+    videoCodec: 'utvideo',
+    audioCodec: 'pcm_s16le',
+    description: 'AVI con UT Video (rápido y lossless, bueno para edición)',
+    outputFormat: 'avi',
+    extraOptions: [
+      '-pix_fmt', 'yuv422p',
+      '-pred', 'median'
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-dv': {
+    videoCodec: 'dvvideo',
+    audioCodec: 'pcm_s16le',
+    description: 'DV para edición profesional (25 Mbps, compatible)',
+    outputFormat: 'avi',
+    resolution: '720x576',
+    fps: 25,
+    extraOptions: [
+      '-pix_fmt', 'yuv420p'
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-dv-ntsc': {
+    videoCodec: 'dvvideo',
+    audioCodec: 'pcm_s16le',
+    description: 'DV NTSC para edición profesional (25 Mbps)',
+    outputFormat: 'avi',
+    resolution: '720x480', 
+    fps: 30,
+    extraOptions: [
+      '-pix_fmt', 'yuv420p'
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-mjpeg-high': {
+    videoCodec: 'mjpeg',
+    audioCodec: 'pcm_s16le',
+    description: 'MJPEG alta calidad (compresión moderada, bueno para edición)',
+    outputFormat: 'avi',
+    extraOptions: [
+      '-q:v', '2', 
+      '-pix_fmt', 'yuvj422p', 
+      '-huffman', 'optimal'  
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-mjpeg': {
+    videoCodec: 'mjpeg',
+    audioCodec: 'pcm_s16le',
+    description: 'MJPEG calidad media (balance tamaño/calidad)',
+    outputFormat: 'avi',
+    extraOptions: [
+      '-q:v', '5',
+      '-pix_fmt', 'yuvj420p'
+    ],
+    allowCustomOptions: false
+  },
+
+  // Opciones adicionales útiles
+  'prores-proxy': {
+    videoCodec: 'prores_ks',
+    audioCodec: 'pcm_s16le',
+    description: 'Apple ProRes Proxy (edición offline, tamaño pequeño)',
+    outputFormat: 'mov',
+    extraOptions: [
+      '-profile:v', '0',
+      '-pix_fmt', 'yuv422p10le'
+    ],
+    allowCustomOptions: false
+  },
+
+  'prores-lt': {
+    videoCodec: 'prores_ks',
+    audioCodec: 'pcm_s16le',
+    description: 'Apple ProRes LT (buena calidad para edición)',
+    outputFormat: 'mov',
+    extraOptions: [
+      '-profile:v', '1',
+      '-pix_fmt', 'yuv422p10le'
+    ],
+    allowCustomOptions: false
+  },
+
+  'prores-standard': {
+    videoCodec: 'prores_ks',
+    audioCodec: 'pcm_s16le',
+    description: 'Apple ProRes 422 (calidad estándar profesional)',
+    outputFormat: 'mov',
+    extraOptions: [
+      '-profile:v', '2',  
+      '-pix_fmt', 'yuv422p10le'
+    ],
+    allowCustomOptions: false
+  },
+
+  'prores-hq': {
+    videoCodec: 'prores_ks',
+    audioCodec: 'pcm_s16le',
+    description: 'Apple ProRes 422 HQ (alta calidad, producción)',
+    outputFormat: 'mov',
+    extraOptions: [
+      '-profile:v', '3',  
+      '-pix_fmt', 'yuv422p10le',
+      '-vendor', 'apl0'
+    ],
+    allowCustomOptions: false
   }
 };
 
@@ -537,7 +735,7 @@ const getMediaInfo = (filePath) => {
             width: videoStream.width,
             height: videoStream.height,
             aspectRatio: videoStream.display_aspect_ratio,
-            fps: eval(videoStream.r_frame_rate),
+            fps: parseFrameRate(videoStream.r_frame_rate),
             bitrate: videoStream.bit_rate,
             pixelFormat: videoStream.pix_fmt,
             colorSpace: videoStream.color_space,
@@ -659,7 +857,7 @@ function buildOutputOptions({ twoPass, presetConfig, jobId, customOptions }) {
   if (presetConfig.extraOptions) {
     outputOptions.push(...presetConfig.extraOptions);
   }
-  if (customOptions.length > 0) {
+  if (customOptions.length > 0 && presetConfig.allowCustomOptions !== false) {
     outputOptions.push(...customOptions);
   }
   return outputOptions;
@@ -702,11 +900,7 @@ function handleProgress(jobId, progress) {
   );
 }
 
-async function handleEnd({ jobId, inputPath, outputPath, calculateMetrics }) {
-  let metrics = null;
-  if (calculateMetrics) {
-    metrics = await calculateAdvancedMetrics(inputPath, outputPath);
-  }
+async function handleEnd({ jobId, inputPath, outputPath }) {
   const outputInfo = await getMediaInfo(outputPath);
   const outputStats = await fs.stat(outputPath);
 
@@ -715,7 +909,6 @@ async function handleEnd({ jobId, inputPath, outputPath, calculateMetrics }) {
     outputPath,
     outputSize: outputStats.size,
     outputInfo,
-    metrics,
     processingTime: Date.now() - jobManager.getJob(jobId).createdAt
   };
 
@@ -799,7 +992,7 @@ const getVideoDuration = async (inputPath) => {
   try {
     // Esperar a que el archivo esté disponible
     await waitForFile(inputPath);
-    
+
     return new Promise((resolve, reject) => {
       ffmpeg.ffprobe(inputPath, (err, metadata) => {
         if (err) {
@@ -868,14 +1061,13 @@ function handleProgressEvent({
 
     logger.info(
       `Job ${jobId} - ${currentProgress}% | ` +
-        `Time: ${progress.timemark}/${formatDuration(totalDuration)} | ` +
-        `FPS: ${progress.currentFps || 0} | ` +
-        `Speed: ${
-          progress.currentKbps
-            ? (progress.currentKbps / 1000).toFixed(2) + "x"
-            : "N/A"
-        } | ` +
-        `ETA: ${formatDuration(eta)}`
+      `Time: ${progress.timemark}/${formatDuration(totalDuration)} | ` +
+      `FPS: ${progress.currentFps || 0} | ` +
+      `Speed: ${progress.currentKbps
+        ? (progress.currentKbps / 1000).toFixed(2) + "x"
+        : "N/A"
+      } | ` +
+      `ETA: ${formatDuration(eta)}`
     );
     lastLoggedProgress = currentProgress;
   }
@@ -982,7 +1174,6 @@ const convertVideoWithProgress = async (
     duration = null,
     removeAudio = false,
     customOptions = [],
-    calculateMetrics = false,
     watermark = null,
     subtitles = null,
     twoPass = false,
@@ -1057,7 +1248,15 @@ const convertVideoWithProgress = async (
       customOptions,
     });
     command.outputOptions(outputOptions);
-    command.toFormat(format);
+    // Asegurar formato AVI para presets raw/avi
+    const aviPresets = ['raw-uncompressed', 'avi-uncompressed', 'avi-lossless',
+      'avi-ffv1', 'avi-utvideo', 'avi-dv', 'avi-mjpeg'];
+
+    if (aviPresets.includes(preset)) {
+      command.toFormat('avi');
+    } else {
+      command.toFormat(format);
+    }
   }
 
   applyCommandOptions(command);
@@ -1079,7 +1278,6 @@ const convertVideoWithProgress = async (
     startTimeMs,
     inputPath,
     outputPath,
-    calculateMetrics,
     resolve,
     totalDuration,
   }) {
@@ -1088,15 +1286,6 @@ const convertVideoWithProgress = async (
     logger.info(
       `Job ${jobId} - Encoding completed in ${formatDuration(totalTime)}`
     );
-    let metrics = null;
-    if (calculateMetrics) {
-      logger.info(`Job ${jobId} - Calculating quality metrics...`);
-      try {
-        metrics = await calculateAdvancedMetrics(inputPath, outputPath);
-      } catch (err) {
-        logger.warn(`Failed to calculate metrics:`, err.message);
-      }
-    }
     const outputInfo = await getMediaInfo(outputPath);
     const outputStats = await fs.stat(outputPath);
     const processingTime = Date.now() - jobManager.getJob(jobId).createdAt;
@@ -1106,7 +1295,6 @@ const convertVideoWithProgress = async (
       outputSize: outputStats.size,
       outputSizeFormatted: formatSize(outputStats.size),
       outputInfo,
-      metrics,
       processingTime,
       processingTimeFormatted: formatDuration(processingTime / 1000),
     };
@@ -1183,7 +1371,6 @@ const convertVideoWithProgress = async (
             startTimeMs,
             inputPath,
             outputPath,
-            calculateMetrics,
             resolve,
             totalDuration,
           });
@@ -1448,7 +1635,6 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
       startTime,
       duration,
       removeAudio,
-      calculateMetrics,
       watermark,
       subtitles,
       twoPass,
@@ -1500,7 +1686,6 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
         startTime: startTime ? Number.parseFloat(startTime) : null,
         duration: duration ? Number.parseFloat(duration) : null,
         removeAudio: removeAudio === 'true',
-        calculateMetrics: calculateMetrics === 'true',
         watermark,
         subtitles,
         twoPass: twoPass === 'true',
@@ -1678,11 +1863,6 @@ app.post('/api/compare', async (req, res) => {
       return res.status(404).json({ error: 'Jobs not found' });
     }
 
-    const metrics = await calculateAdvancedMetrics(
-      originalJob.inputPath || originalJob.outputPath,
-      convertedJob.outputPath
-    );
-
     const originalInfo = await getMediaInfo(originalJob.inputPath || originalJob.outputPath);
     const convertedInfo = await getMediaInfo(convertedJob.outputPath);
 
@@ -1702,7 +1882,6 @@ app.post('/api/compare', async (req, res) => {
       },
       comparison: {
         sizeReduction: ((1 - convertedStats.size / originalStats.size) * 100).toFixed(2) + '%',
-        metrics
       }
     });
 
