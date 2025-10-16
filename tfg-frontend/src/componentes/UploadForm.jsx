@@ -2,11 +2,11 @@ import React, { useState, useRef } from 'react';
 import PropTypes from 'prop-types';
 import { api } from '../servicios/api';
 
-const VIDEO_TYPES = [
+const VIDEO_TYPES = new Set([
   'video/mp4', 'video/avi', 'video/mov', 'video/mkv', 
   'video/webm', 'video/flv', 'video/wmv', 'video/m4v',
   'video/3gp', 'video/ogv', 'video/x-msvideo', 'video/quicktime'
-];
+]);
 
 const VIDEO_EXTENSIONS = /\.(mp4|avi|mov|mkv|webm|flv|wmv|m4v|3gp|ogv|hevc|h265|mts|m2ts|ts|vob|mpg|mpeg)$/i;
 
@@ -57,11 +57,19 @@ const formatDuration = (seconds) => {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
-  return h > 0 ? `${h}h ${m}m ${s}s` : m > 0 ? `${m}m ${s}s` : `${s}s`;
+  let result;
+  if (h > 0) {
+    result = `${h}h ${m}m ${s}s`;
+  } else if (m > 0) {
+    result = `${m}m ${s}s`;
+  } else {
+    result = `${s}s`;
+  }
+  return result;
 };
 
 const isVideoFile = (file) => {
-  return VIDEO_TYPES.includes(file.type) || VIDEO_EXTENSIONS.test(file.name);
+  return VIDEO_TYPES.has(file.type) || VIDEO_EXTENSIONS.test(file.name);
 };
 
 const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => {
@@ -145,11 +153,11 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
     formData.append('video', selectedFile);
     formData.append('preset', selectedPreset);
     
-    Object.entries(customOptions).forEach(([key, value]) => {
+    for (const [key, value] of Object.entries(customOptions)) {
       if (value !== '' && value !== false && value !== 0 && value !== null) {
         formData.append(key, value);
       }
-    });
+    }
 
     try {
       const response = await fetch('http://localhost:3000/api/convert', {
@@ -187,19 +195,19 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
       <div className="upload-section">
         <h2>Subir Video para Conversión</h2>
         
-        <div 
+        <button
+          type="button"
           className={`drop-zone ${isDragOver ? 'drag-over' : ''} ${selectedFile ? 'has-file' : ''}`}
           onDrop={handleDrop}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onClick={() => fileInputRef.current?.click()}
-          role="button"
-          tabIndex={0}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               fileInputRef.current?.click();
             }
           }}
+          style={{ width: '100%', background: 'none', border: 'none', padding: 0 }}
         >
           <input
             ref={fileInputRef}
@@ -240,7 +248,7 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
               </p>
             </div>
           )}
-        </div>
+        </button>
 
         {/* Error de subida */}
         {uploadError && (
@@ -265,8 +273,11 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
         {analysisResults?.suggestions && analysisResults.suggestions.length > 0 && (
           <div className="analysis-suggestions">
             <h3>💡 Recomendaciones de Optimización</h3>
-            {analysisResults.suggestions.map((suggestion, index) => (
-              <div key={index} className="suggestion-item">
+            {analysisResults.suggestions.map((suggestion) => (
+              <div 
+                key={`${suggestion.type}-${suggestion.message}-${suggestion.preset || ''}`} 
+                className="suggestion-item"
+              >
                 <span className="suggestion-type">{suggestion.type}</span>
                 <span className="suggestion-message">{suggestion.message}</span>
                 {suggestion.preset && (
@@ -298,7 +309,7 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
               >
                 {Object.entries(presets).map(([key, preset]) => (
                   <option key={key} value={key}>
-                    {key.charAt(0).toUpperCase() + key.slice(1).replace(/-/g, ' ')} - {preset.description}
+                    {key.charAt(0).toUpperCase() + key.slice(1).replaceAll('-', ' ')} - {preset.description}
                   </option>
                 ))}
               </select>

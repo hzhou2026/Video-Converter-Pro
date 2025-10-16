@@ -40,9 +40,24 @@ const config = {
   jwtSecret: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
   storageType: process.env.STORAGE_TYPE || 'local', // 'local' o 's3'
   s3Bucket: process.env.S3_BUCKET,
-  cleanupInterval: Number.parseInt(process.env.CLEANUP_INTERVAL) || 3600000, // 1 hora
+  cleanupInterval: Number.parseInt(process.env.CLEANUP_INTERVAL) || 60000, // 1 minuto
   fileRetentionTime: Number.parseInt(process.env.FILE_RETENTION) || 10800000, // 3 horas
 };
+
+// ===================== CONFIGURACIÓN DE LIMPIEZA AGRESIVA =====================
+
+const cleanupConfig = {
+  deleteInputAfterProcessing: true,
+  deleteOutputAfterDownload: true,
+  maxDownloads: 1,
+  tempFileRetention: 300000,
+  failedJobRetention: 600000,
+  completedJobRetention: 1800000
+};
+
+// ===================== TRACKING DE DESCARGAS =====================
+
+const downloadTracker = new Map();
 
 // ===================== LOGGING =====================
 
@@ -79,13 +94,13 @@ app.use(express.urlencoded({ extended: true }));
 // Limitador de tasa
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 20, // limite cada IP a 20 requests por ventana
+  max: 100, // limite cada IP a 100 requests por ventana
   message: 'Demasiadas solicitudes de esta IP, por favor intente de nuevo más tarde.'
 });
 
 const uploadLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hora
-  max: 5, // limite cada IP a 5 uploads por hora
+  max: 20, // limite cada IP a 20 uploads por hora
   message: 'Límite de carga excedido, por favor intente de nuevo más tarde.'
 });
 
@@ -535,7 +550,7 @@ const PRESETS = {
     outputFormat: 'avi',
     extraOptions: [
       '-pix_fmt', 'yuv422p',
-      '-pred', 'left' 
+      '-pred', 'left'
     ],
     allowCustomOptions: false
   },
@@ -586,7 +601,7 @@ const PRESETS = {
     audioCodec: 'pcm_s16le',
     description: 'DV NTSC para edición profesional (25 Mbps)',
     outputFormat: 'avi',
-    resolution: '720x480', 
+    resolution: '720x480',
     fps: 30,
     extraOptions: [
       '-pix_fmt', 'yuv420p'
@@ -600,9 +615,9 @@ const PRESETS = {
     description: 'MJPEG alta calidad (compresión moderada, bueno para edición)',
     outputFormat: 'avi',
     extraOptions: [
-      '-q:v', '2', 
-      '-pix_fmt', 'yuvj422p', 
-      '-huffman', 'optimal'  
+      '-q:v', '2',
+      '-pix_fmt', 'yuvj422p',
+      '-huffman', 'optimal'
     ],
     allowCustomOptions: false
   },
@@ -650,7 +665,7 @@ const PRESETS = {
     description: 'Apple ProRes 422 (calidad estándar profesional)',
     outputFormat: 'mov',
     extraOptions: [
-      '-profile:v', '2',  
+      '-profile:v', '2',
       '-pix_fmt', 'yuv422p10le'
     ],
     allowCustomOptions: false
@@ -662,7 +677,7 @@ const PRESETS = {
     description: 'Apple ProRes 422 HQ (alta calidad, producción)',
     outputFormat: 'mov',
     extraOptions: [
-      '-profile:v', '3',  
+      '-profile:v', '3',
       '-pix_fmt', 'yuv422p10le',
       '-vendor', 'apl0'
     ],
@@ -735,7 +750,7 @@ const getMediaInfo = (filePath) => {
             width: videoStream.width,
             height: videoStream.height,
             aspectRatio: videoStream.display_aspect_ratio,
-            fps: parseFrameRate(videoStream.r_frame_rate),
+            fps: eval(videoStream.r_frame_rate),
             bitrate: videoStream.bit_rate,
             pixelFormat: videoStream.pix_fmt,
             colorSpace: videoStream.color_space,
@@ -1143,6 +1158,7 @@ async function handleJobError(jobId, err, redis, jobManager, io, reject) {
   reject(err instanceof Error ? err : new Error(String(err)));
 }
 
+// Validar duración solicitada vs duración real del video
 async function getValidatedDuration(inputPath, startTime, duration, jobId) {
   const fileExists = await fs.access(inputPath)
     .then(() => true)
@@ -1157,6 +1173,74 @@ async function getValidatedDuration(inputPath, startTime, duration, jobId) {
     totalDuration = totalDuration - startTime;
   }
   return totalDuration;
+}
+
+// Validar presets raw para duración máxima
+async function validateRawPreset(preset, duration) {
+  const rawPresets = [
+    'raw-uncompressed',
+    'avi-uncompressed',
+    'avi-uncompressed-rgb'
+  ];
+
+  if (rawPresets.includes(preset)) {
+    const presetConfig = PRESETS[preset];
+
+    if (presetConfig.maxDuration && duration > presetConfig.maxDuration) {
+      throw new Error(
+        `El preset "${preset}" está limitado a ${presetConfig.maxDuration} segundos ` +
+        `para evitar archivos masivos. Tu video dura ${Math.round(duration)} segundos. ` +
+        `Usa un preset con compresión lossless como "avi-ffv1" o "avi-lossless" en su lugar.`
+      );
+    }
+  }
+}
+
+// LIMPIEZA DESPUÉS DE PROCESAMIENTO 
+async function cleanupAfterProcessing(jobId, inputPath) {
+  if (!cleanupConfig.deleteInputAfterProcessing) return;
+
+  try {
+    if (fsSync.existsSync(inputPath)) {
+      await fs.unlink(inputPath);
+      logger.info(`Deleted input file after processing: ${inputPath}`);
+    }
+  } catch (error) {
+    logger.error(`Failed to delete input file ${inputPath}:`, error);
+  }
+}
+
+//LIMPIEZA DESPUÉS DE DESCARGA DEL USUARIO
+async function cleanupAfterDownload(jobId, outputPath) {
+  if (!cleanupConfig.deleteOutputAfterDownload) return;
+
+  try {
+    const downloadCount = downloadTracker.get(jobId) || 0;
+    downloadTracker.set(jobId, downloadCount + 1);
+
+    if (downloadCount + 1 >= cleanupConfig.maxDownloads) {
+      // Esperar un poco para asegurar que la descarga terminó
+      setTimeout(async () => {
+        try {
+          if (fsSync.existsSync(outputPath)) {
+            await fs.unlink(outputPath);
+            logger.info(`Deleted output file after download: ${outputPath}`);
+          }
+
+          // Limpiar el job del sistema
+          jobManager.deleteJob(jobId);
+          await redis.del(`job:${jobId}`);
+          downloadTracker.delete(jobId);
+
+          logger.info(`Cleaned up job ${jobId} after download`);
+        } catch (err) {
+          logger.error(`Error in delayed cleanup for job ${jobId}:`, err);
+        }
+      }, 5000); // 5 segundos de delay
+    }
+  } catch (error) {
+    logger.error(`Failed to cleanup after download for job ${jobId}:`, error);
+  }
 }
 
 const convertVideoWithProgress = async (
@@ -1189,24 +1273,31 @@ const convertVideoWithProgress = async (
   let totalDuration;
   try {
     totalDuration = await getValidatedDuration(inputPath, startTime, duration, jobId);
+    await validateRawPreset(preset, totalDuration);
   } catch (error) {
-    logger.error(`Job ${jobId} - Failed to get video duration:`, error);
+    logger.error(`Job ${jobId} - Validation failed:`, error);
+
+    const errorMessage = error.message || `Cannot process video: ${error}`;
+
     await redis.hset(`job:${jobId}`, {
       status: "failed",
-      error: `Failed to read input file: ${error.message}`,
+      error: errorMessage,
     });
+
     jobManager.updateJob(jobId, {
       status: "failed",
-      error: `Failed to read input file: ${error.message}`,
+      error: errorMessage,
     });
+
     await redis.publish(
       "job:failed",
       JSON.stringify({
         jobId,
-        error: `Failed to read input file: ${error.message}`,
+        error: errorMessage,
       })
     );
-    throw new Error(`Cannot process video: ${error.message}`);
+
+    throw error;
   }
 
   const presetConfig = PRESETS[preset] || PRESETS["balanced"];
@@ -1324,11 +1415,9 @@ const convertVideoWithProgress = async (
       progress: 100,
       result,
     });
-    logger.info(
-      `Job ${jobId} completed successfully in ${formatDuration(
-        totalTime
-      )}`
-    );
+    await cleanupAfterProcessing(jobId, inputPath);
+
+    logger.info(`Job ${jobId} completed successfully in ${formatDuration(totalTime)}`);
     resolve(result);
   }
 
@@ -1559,9 +1648,31 @@ app.post('/api/analyze', upload.single('media'), async (req, res) => {
       info,
       suggestions: suggestOptimalSettings(info)
     });
+
+    //Eliminar archivo después del análisis
+    setTimeout(async () => {
+      try {
+        if (fsSync.existsSync(filePath)) {
+          await fs.unlink(filePath);
+          logger.info(`✓ Deleted analyzed file: ${filePath}`);
+        }
+      } catch (err) {
+        logger.error(`Failed to delete analyzed file ${filePath}:`, err);
+      }
+    }, 5000); // 5 segundos de delay para que la respuesta llegue al cliente
+
   } catch (error) {
     logger.error('Analysis error:', error);
     res.status(500).json({ error: 'Failed to analyze media', details: error.message });
+    
+    // Limpiar archivo en caso de error
+    if (req.file?.path && fsSync.existsSync(req.file.path)) {
+      try {
+        await fs.unlink(req.file.path);
+      } catch (unlinkError) {
+        logger.error('Failed to cleanup file after error:', unlinkError);
+      }
+    }
   }
 });
 
@@ -1788,6 +1899,27 @@ app.delete('/api/job/:jobId', async (req, res) => {
       cancelledAt: Date.now()
     });
 
+    // Eliminar archivos del job cancelado
+    setTimeout(async () => {
+      try {
+        if (job.inputPath && fsSync.existsSync(job.inputPath)) {
+          await fs.unlink(job.inputPath);
+          logger.info(`✓ Deleted input file of cancelled job: ${job.inputPath}`);
+        }
+        if (job.outputPath && fsSync.existsSync(job.outputPath)) {
+          await fs.unlink(job.outputPath);
+          logger.info(`✓ Deleted output file of cancelled job: ${job.outputPath}`);
+        }
+        
+        // Limpiar job
+        jobManager.deleteJob(jobId);
+        await redis.del(`job:${jobId}`);
+        downloadTracker.delete(jobId);
+      } catch (err) {
+        logger.error(`Error cleaning cancelled job ${jobId}:`, err);
+      }
+    }, 2000); // 2 segundos de delay
+
     res.json({ message: 'Job cancelled successfully' });
   } catch (error) {
     logger.error('Cancel job error:', error);
@@ -1811,7 +1943,16 @@ app.get('/api/download/:jobId', async (req, res) => {
     return res.status(404).json({ error: 'Output file not found' });
   }
 
-  res.download(job.outputPath, job.outputName);
+  // Descargar el archivo
+  res.download(job.outputPath, job.outputName, async (err) => {
+    if (err) {
+      logger.error('Download error:', err);
+    } else {
+      // Limpiar después de descarga exitosa
+      logger.info(`Download completed for job ${req.params.jobId}`);
+      await cleanupAfterDownload(req.params.jobId, job.outputPath);
+    }
+  });
 });
 
 // Transmitir video convertido
@@ -1946,40 +2087,89 @@ io.on('connection', (socket) => {
 const cleanup = async () => {
   try {
     const now = Date.now();
-    const retentionTime = config.fileRetentionTime;
+    logger.info('Starting cleanup process...');
 
-    // Limpiar archivos antiguos
-    for (const dir of [dirs.uploads, dirs.outputs, dirs.temp]) {
-      const files = await fs.readdir(dir);
+    const tempCleaned = await cleanupTempFiles(now);
+    const orphansCleaned = await cleanupOrphanFiles(now);
+    const jobsCleaned = await cleanupOldJobs(now);
 
-      for (const file of files) {
-        const filePath = path.join(dir, file);
-        const stats = await fs.stat(filePath);
+    if (tempCleaned > 0) logger.info(`Cleaned ${tempCleaned} temp files`);
+    if (orphansCleaned > 0) logger.info(`Cleaned ${orphansCleaned} orphan files`);
+    if (jobsCleaned > 0) logger.info(`Cleaned ${jobsCleaned} old jobs`);
 
-        if (now - stats.mtimeMs > retentionTime) {
-          await fs.unlink(filePath);
-          logger.info(`Cleaned up old file: ${filePath}`);
-        }
-      }
-    }
-
-    // Limpiar jobs antiguos
-    const jobs = jobManager.getAllJobs();
-    for (const job of jobs) {
-      if ((job.status === 'completed' || job.status === 'failed') &&
-        now - (job.completedAt || job.createdAt) > retentionTime) {
-        jobManager.deleteJob(job.id);
-        logger.info(`Cleaned up job: ${job.id}`);
-      }
-    }
-
+    logger.info('Cleanup process completed');
   } catch (error) {
     logger.error('Cleanup error:', error);
   }
 };
 
+async function cleanupTempFiles(now) {
+  const tempFiles = await fs.readdir(dirs.temp);
+  let cleaned = 0;
+
+  for (const file of tempFiles) {
+    try {
+      const filePath = path.join(dirs.temp, file);
+      const stats = await fs.stat(filePath);
+      if (now - stats.mtimeMs > cleanupConfig.tempFileRetention) {
+        await fs.unlink(filePath);
+        cleaned++;
+      }
+    } catch {}
+  }
+  return cleaned;
+}
+
+async function cleanupOrphanFiles(now) {
+  let cleaned = 0;
+  for (const dir of [dirs.uploads, dirs.outputs]) {
+    const files = await fs.readdir(dir);
+    for (const file of files) {
+      try {
+        const filePath = path.join(dir, file);
+        const stats = await fs.stat(filePath);
+        if (now - stats.mtimeMs > 3600000) {
+          const hasJob = Array.from(jobManager.jobs.values()).some(
+            job => job.inputPath === filePath || job.outputPath === filePath
+          );
+          if (!hasJob) {
+            await fs.unlink(filePath);
+            cleaned++;
+          }
+        }
+      } catch {}
+    }
+  }
+  return cleaned;
+}
+
+async function cleanupOldJobs(now) {
+  const jobs = jobManager.getAllJobs();
+  let cleaned = 0;
+
+  for (const job of jobs) {
+    const isFailedOld = job.status === 'failed' && now - job.createdAt > cleanupConfig.failedJobRetention;
+    const isCompletedOld = job.status === 'completed' && now - (job.completedAt || job.createdAt) > cleanupConfig.completedJobRetention;
+    if (!isFailedOld && !isCompletedOld) continue;
+
+    try {
+      if (job.inputPath && fsSync.existsSync(job.inputPath)) await fs.unlink(job.inputPath);
+      if (job.outputPath && fsSync.existsSync(job.outputPath)) await fs.unlink(job.outputPath);
+
+      jobManager.deleteJob(job.id);
+      await redis.del(`job:${job.id}`);
+      downloadTracker.delete(job.id);
+      cleaned++;
+    } catch (err) {
+      logger.error(`Error cleaning job ${job.id}:`, err);
+    }
+  }
+  return cleaned;
+}
+
 // Ejecutar limpieza periódica
 setInterval(cleanup, config.cleanupInterval);
+cleanup();
 
 // ===================== MANEJO DE ERRORES =====================
 
