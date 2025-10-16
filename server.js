@@ -1,16 +1,16 @@
 const express = require("express");
 const multer = require("multer");
 const ffmpeg = require("fluent-ffmpeg");
-const path = require("path");
-const fs = require("fs").promises;
-const fsSync = require("fs");
+const path = require("node:path");
+const fs = require("node:fs").promises;
+const fsSync = require("node:fs");
 const cors = require("cors");
 const { v4: uuidv4 } = require("uuid");
-const EventEmitter = require("events");
-const { exec } = require("child_process");
-const util = require("util");
+const EventEmitter = require("node:events");
+const { exec } = require("node:child_process");
+const util = require("node:util");
 const execPromise = util.promisify(exec);
-const crypto = require("crypto");
+const crypto = require("node:crypto");
 const rateLimit = require("express-rate-limit");
 const compression = require("compression");
 const helmet = require("helmet");
@@ -18,7 +18,7 @@ const winston = require("winston");
 const Queue = require("bull");
 const Redis = require("ioredis");
 const socketIO = require("socket.io");
-const http = require("http");
+const http = require("node:http");
 
 const app = express();
 const server = http.createServer(app);
@@ -33,16 +33,16 @@ const io = socketIO(server, {
 
 const config = {
   port: process.env.PORT || 3000,
-  maxFileSize: parseInt(process.env.MAX_FILE_SIZE) || 2000 * 1024 * 1024, // 2GB
-  maxConcurrentJobs: parseInt(process.env.MAX_CONCURRENT_JOBS) || 3,
+  maxFileSize: Number.parseInt(process.env.MAX_FILE_SIZE) || 2000 * 1024 * 1024, // 2GB
+  maxConcurrentJobs: Number.parseInt(process.env.MAX_CONCURRENT_JOBS) || 3,
   redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
   enableCache: process.env.ENABLE_CACHE !== 'false',
   enableMetrics: process.env.ENABLE_METRICS !== 'false',
   jwtSecret: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
   storageType: process.env.STORAGE_TYPE || 'local', // 'local' o 's3'
   s3Bucket: process.env.S3_BUCKET,
-  cleanupInterval: parseInt(process.env.CLEANUP_INTERVAL) || 3600000, // 1 hora
-  fileRetentionTime: parseInt(process.env.FILE_RETENTION) || 10800000, // 3 horas
+  cleanupInterval: Number.parseInt(process.env.CLEANUP_INTERVAL) || 3600000, // 1 hora
+  fileRetentionTime: Number.parseInt(process.env.FILE_RETENTION) || 10800000, // 3 horas
 };
 
 // ===================== LOGGING =====================
@@ -104,11 +104,11 @@ const dirs = {
 };
 
 // Crear directorios si no existen
-Object.values(dirs).forEach(dir => {
+for (const dir of Object.values(dirs)) {
   if (!fsSync.existsSync(dir)) {
     fsSync.mkdirSync(dir, { recursive: true });
   }
-});
+}
 
 // ===================== REDIS & QUEUE =====================
 
@@ -591,7 +591,7 @@ const formatDuration = (seconds) => {
 function buildVideoFilters({ speed, removeAudio, denoise, stabilize, crop, rotate, flip, watermark }) {
   const videoFilters = [];
 
-  if (speed !== 1.0) {
+  if (speed !== 1) {
     videoFilters.push(`setpts=${1 / speed}*PTS`);
   }
   if (denoise) {
@@ -636,7 +636,7 @@ function applyAudioOptions(command, { removeAudio, presetConfig, normalizeAudio,
     if (normalizeAudio) {
       command.audioFilters('loudnorm=I=-16:TP=-1.5:LRA=11');
     }
-    if (speed !== 1.0) {
+    if (speed !== 1) {
       command.audioFilters(`atempo=${speed}`);
     }
   }
@@ -782,9 +782,9 @@ function timemarkToSeconds(timemark) {
     const parts = cleanTimemark.split(':');
     if (parts.length !== 3) return 0;
 
-    const hours = parseInt(parts[0]) || 0;
-    const minutes = parseInt(parts[1]) || 0;
-    const seconds = parseFloat(parts[2]) || 0;
+    const hours = Number.parseInt(parts[0]) || 0;
+    const minutes = Number.parseInt(parts[1]) || 0;
+    const seconds = Number.parseFloat(parts[2]) || 0;
 
     const totalSeconds = hours * 3600 + minutes * 60 + seconds;
     return isNegative ? 0 : totalSeconds;
@@ -951,6 +951,22 @@ async function handleJobError(jobId, err, redis, jobManager, io, reject) {
   reject(err instanceof Error ? err : new Error(String(err)));
 }
 
+async function getValidatedDuration(inputPath, startTime, duration, jobId) {
+  const fileExists = await fs.access(inputPath)
+    .then(() => true)
+    .catch(() => false);
+  if (!fileExists) {
+    throw new Error(`Input file does not exist: ${inputPath}`);
+  }
+  let totalDuration = await getVideoDuration(inputPath);
+  if (duration !== null && duration > 0) {
+    totalDuration = Math.min(duration, totalDuration - (startTime || 0));
+  } else if (startTime !== null && startTime > 0) {
+    totalDuration = totalDuration - startTime;
+  }
+  return totalDuration;
+}
+
 const convertVideoWithProgress = async (
   jobId,
   inputPath,
@@ -973,28 +989,11 @@ const convertVideoWithProgress = async (
     normalizeAudio = false,
     denoise = false,
     stabilize = false,
-    speed = 1.0,
+    speed = 1,
     crop = null,
     rotate = null,
     flip = null,
   } = options;
-
-  // Variables de progreso
-  async function getValidatedDuration(inputPath, startTime, duration, jobId) {
-    const fileExists = await fs.access(inputPath)
-      .then(() => true)
-      .catch(() => false);
-    if (!fileExists) {
-      throw new Error(`Input file does not exist: ${inputPath}`);
-    }
-    let totalDuration = await getVideoDuration(inputPath);
-    if (duration !== null && duration > 0) {
-      totalDuration = Math.min(duration, totalDuration - (startTime || 0));
-    } else if (startTime !== null && startTime > 0) {
-      totalDuration = totalDuration - startTime;
-    }
-    return totalDuration;
-  }
 
   let totalDuration;
   try {
@@ -1207,7 +1206,7 @@ const convertVideoWithProgress = async (
       try {
         const jobData = await redis.hgetall(`job:${jobId}`);
         if (jobData && jobData.status === "processing") {
-          const lastUpdate = parseInt(jobData.updatedAt || 0);
+          const lastUpdate = Number.parseInt(jobData.updatedAt || 0);
           const now = Date.now();
 
           if (now - lastUpdate > 20000) {
@@ -1329,14 +1328,14 @@ app.get('/api/job/:jobId', async (req, res) => {
         job = {
           id: jobId,
           status: jobData.status,
-          progress: parseInt(jobData.progress || 0),
+          progress: Number.parseInt(jobData.progress || 0),
           currentTime: jobData.currentTime,
-          fps: parseFloat(jobData.fps || 0),
+          fps: Number.parseFloat(jobData.fps || 0),
           speed: jobData.speed,
           error: jobData.error,
           result: jobData.result ? JSON.parse(jobData.result) : null,
-          createdAt: parseInt(jobData.createdAt || Date.now()),
-          updatedAt: parseInt(jobData.updatedAt || Date.now())
+          createdAt: Number.parseInt(jobData.createdAt || Date.now()),
+          updatedAt: Number.parseInt(jobData.updatedAt || Date.now())
         };
       }
     }
@@ -1498,8 +1497,8 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
         preset,
         format,
         resolution,
-        startTime: startTime ? parseFloat(startTime) : null,
-        duration: duration ? parseFloat(duration) : null,
+        startTime: startTime ? Number.parseFloat(startTime) : null,
+        duration: duration ? Number.parseFloat(duration) : null,
         removeAudio: removeAudio === 'true',
         calculateMetrics: calculateMetrics === 'true',
         watermark,
@@ -1508,9 +1507,9 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
         normalizeAudio: normalizeAudio === 'true',
         denoise: denoise === 'true',
         stabilize: stabilize === 'true',
-        speed: speed ? parseFloat(speed) : 1.0,
+        speed: speed ? Number.parseFloat(speed) : 1,
         crop,
-        rotate: rotate ? parseFloat(rotate) : null,
+        rotate: rotate ? Number.parseFloat(rotate) : null,
         flip,
         customOptions: Array.isArray(customOptions) ? customOptions : []
       }
@@ -1645,8 +1644,8 @@ app.get('/api/stream/:jobId', async (req, res) => {
 
   if (range) {
     const parts = range.replace(/bytes=/, "").split("-");
-    const start = parseInt(parts[0], 10);
-    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+    const start = Number.parseInt(parts[0], 10);
+    const end = parts[1] ? Number.parseInt(parts[1], 10) : fileSize - 1;
     const chunksize = (end - start) + 1;
     const file = fsSync.createReadStream(videoPath, { start, end });
     const head = {
@@ -1739,9 +1738,9 @@ io.on('connection', (socket) => {
             id: jobId,
             jobId: jobId,
             status: jobData.status,
-            progress: parseInt(jobData.progress || 0),
+            progress: Number.parseInt(jobData.progress || 0),
             currentTime: jobData.currentTime,
-            fps: parseFloat(jobData.fps || 0),
+            fps: Number.parseFloat(jobData.fps || 0),
             speed: jobData.speed,
             error: jobData.error,
             result: jobData.result ? JSON.parse(jobData.result) : null
