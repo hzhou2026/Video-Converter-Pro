@@ -26,8 +26,7 @@ const DEFAULT_OPTIONS = {
   flip: ''
 };
 
-const RESOLUTIONS = [
-  { value: '', label: 'Original' },
+const BASE_RESOLUTIONS = [
   { value: '3840x2160', label: '4K (3840x2160)' },
   { value: '1920x1080', label: 'Full HD (1920x1080)' },
   { value: '1280x720', label: 'HD (1280x720)' },
@@ -75,6 +74,17 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
   const [analysisResults, setAnalysisResults] = useState(null);
   const [uploadError, setUploadError] = useState(null);
   const fileInputRef = useRef(null);
+
+  // Generar opciones de resolución dinámicamente
+  const resolutions = [
+    { 
+      value: '', 
+      label: fileInfo?.video 
+        ? `Original (${fileInfo.video.width}x${fileInfo.video.height})` 
+        : 'Original'
+    },
+    ...BASE_RESOLUTIONS
+  ];
 
   const handleFileSelect = async (file) => {
     if (!isVideoFile(file)) {
@@ -333,7 +343,7 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
                   value={customOptions.resolution}
                   onChange={(e) => updateOption('resolution', e.target.value)}
                 >
-                  {RESOLUTIONS.map(res => (
+                  {resolutions.map(res => (
                     <option key={res.value} value={res.value}>
                       {res.label}
                     </option>
