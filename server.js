@@ -519,7 +519,7 @@ const PRESETS = {
     audioCodec: 'pcm_s16le',
     description: 'AVI sin comprimir en RGB24 (archivos muy grandes)',
     outputFormat: 'avi',
-    maxDuration: 30,
+    maxDuration: 60,
     extraOptions: [
       '-pix_fmt', 'rgb24',
       '-vtag', 'DIB '
