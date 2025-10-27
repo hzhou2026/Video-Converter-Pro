@@ -1,47 +1,338 @@
 const express = require("express");
 const multer = require("multer");
 const ffmpeg = require("fluent-ffmpeg");
-const path = require("path");
-const fs = require("fs").promises;
-const fsSync = require("fs");
+const path = require("node:path");
+const fs = require("node:fs").promises;
+const fsSync = require("node:fs");
 const cors = require("cors");
 const { v4: uuidv4 } = require("uuid");
-const EventEmitter = require("events");
+const EventEmitter = require("node:events");
+const { exec } = require("node:child_process");
+const util = require("node:util");
+const execPromise = util.promisify(exec);
+const crypto = require("node:crypto");
+const rateLimit = require("express-rate-limit");
+const compression = require("compression");
+const helmet = require("helmet");
+const winston = require("winston");
+const Queue = require("bull");
+const Redis = require("ioredis");
+const socketIO = require("socket.io");
+const http = require("node:http");
 
 const app = express();
-
-// Activar CORS para la integración con el frontend
-app.use(cors());
-app.use(express.json());
-
-// Crear directorios si no existen
-const uploadsDir = "uploads";
-const outputsDir = "outputs";
-const tempDir = "temp";
-
-[uploadsDir, outputsDir, tempDir].forEach(dir => {
-  if (!fsSync.existsSync(dir)) {
-    fsSync.mkdirSync(dir, { recursive: true });
+const server = http.createServer(app);
+const io = socketIO(server, {
+  cors: {
+    origin: process.env.FRONTEND_URL || "*",
+    methods: ["GET", "POST"]
   }
 });
 
-// Guardar trabajos activos en memoria
-const activeJobs = new Map();
+// ===================== CONFIGURACIÓN =====================
 
-// Estado de eventos para actualizaciones en tiempo real
-class JobEmitter extends EventEmitter {}
-const jobEmitter = new JobEmitter();
+const config = {
+  port: process.env.PORT || 3000,
+  maxFileSize: Number.parseInt(process.env.MAX_FILE_SIZE) || 2000 * 1024 * 1024, // 2GB
+  maxConcurrentJobs: Number.parseInt(process.env.MAX_CONCURRENT_JOBS) || 3,
+  redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
+  enableCache: process.env.ENABLE_CACHE !== 'false',
+  jwtSecret: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
+  storageType: process.env.STORAGE_TYPE || 'local', // 'local' o 's3'
+  s3Bucket: process.env.S3_BUCKET,
+  cleanupInterval: Number.parseInt(process.env.CLEANUP_INTERVAL) || 60000, // 1 minuto
+  fileRetentionTime: Number.parseInt(process.env.FILE_RETENTION) || 10800000, // 3 horas
+};
 
-// Videopresets predefinidos
+// ===================== CONFIGURACIÓN DE LIMPIEZA AGRESIVA =====================
+
+const cleanupConfig = {
+  deleteInputAfterProcessing: true,
+  deleteOutputAfterDownload: true,
+  maxDownloads: 1,
+  tempFileRetention: 300000,
+  failedJobRetention: 600000,
+  completedJobRetention: 1800000
+};
+
+// ===================== TRACKING DE DESCARGAS =====================
+
+const downloadTracker = new Map();
+
+// ===================== LOGGING =====================
+
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.errors({ stack: true }),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.File({ filename: 'error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'combined.log' }),
+    new winston.transports.Console({
+      format: winston.format.combine(
+        winston.format.colorize(),
+        winston.format.simple()
+      )
+    })
+  ]
+});
+
+// ===================== MIDDLEWARE =====================
+
+app.use(helmet());
+app.use(compression());
+app.use(cors({
+  origin: process.env.FRONTEND_URL || "*",
+  credentials: true
+}));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Limitador de tasa
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 100, // limite cada IP a 100 requests por ventana
+  message: 'Demasiadas solicitudes de esta IP, por favor intente de nuevo más tarde.'
+});
+
+const uploadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hora
+  max: 20, // limite cada IP a 20 uploads por hora
+  message: 'Límite de carga excedido, por favor intente de nuevo más tarde.'
+});
+
+app.use('/api/', limiter);
+app.use('/api/convert', uploadLimiter);
+app.use('/api/batch-convert', uploadLimiter);
+
+// ===================== DIRECTORIOS =====================
+
+const dirs = {
+  uploads: process.env.UPLOADS_DIR || "uploads",
+  outputs: process.env.OUTPUTS_DIR || "outputs",
+  temp: process.env.TEMP_DIR || "temp",
+  cache: process.env.CACHE_DIR || "cache"
+};
+
+// Crear directorios si no existen
+for (const dir of Object.values(dirs)) {
+  if (!fsSync.existsSync(dir)) {
+    fsSync.mkdirSync(dir, { recursive: true });
+  }
+}
+
+// ===================== REDIS & QUEUE =====================
+
+const redis = new Redis(config.redisUrl);
+const videoQueue = new Queue('video-conversion', config.redisUrl);
+const subscriber = new Redis(config.redisUrl);
+
+subscriber.on('message', async (channel, message) => {
+  if (channel === 'job:progress') {
+    const data = JSON.parse(message);
+
+    // jobManager local
+    const job = jobManager.getJob(data.jobId);
+    if (job) {
+      jobManager.updateJob(data.jobId, {
+        status: 'processing',
+        progress: data.progress,
+        currentTime: data.currentTime,
+        fps: data.fps,
+        speed: data.speed
+      });
+    }
+
+    // Emitir a través de Socket.IO a TODOS los clientes suscritos
+    io.to(data.jobId).emit('job:update', {
+      id: data.jobId,
+      jobId: data.jobId,
+      status: 'processing',
+      progress: data.progress,
+      currentTime: data.currentTime,
+      fps: data.fps,
+      speed: data.speed
+    });
+  }
+
+  // Escuchar evento de completado
+  if (channel === 'job:completed') {
+    const data = JSON.parse(message);
+    const job = jobManager.getJob(data.jobId);
+    if (job) {
+      jobManager.updateJob(data.jobId, {
+        status: 'completed',
+        progress: 100,
+        result: data.result,
+        completedAt: Date.now()
+      });
+
+      io.to(data.jobId).emit('job:update', {
+        id: data.jobId,
+        jobId: data.jobId,
+        status: 'completed',
+        progress: 100,
+        result: data.result
+      });
+    }
+  }
+
+  // Escuchar evento de error
+  if (channel === 'job:failed') {
+    const data = JSON.parse(message);
+    const job = jobManager.getJob(data.jobId);
+    if (job) {
+      jobManager.updateJob(data.jobId, {
+        status: 'failed',
+        progress: 0,
+        error: data.error
+      });
+
+      io.to(data.jobId).emit('job:update', {
+        id: data.jobId,
+        jobId: data.jobId,
+        status: 'failed',
+        progress: 0,
+        error: data.error
+      });
+    }
+  }
+});
+
+// SUSCRIBIRSE A TODOS LOS CANALES NECESARIOS
+subscriber.subscribe('job:progress', (err, count) => {
+  if (err) {
+    logger.error('Failed to subscribe to job:progress', err);
+  } else {
+    logger.info('Subscribed to job:progress channel');
+  }
+});
+
+subscriber.subscribe('job:completed', (err, count) => {
+  if (err) {
+    logger.error('Failed to subscribe to job:completed', err);
+  } else {
+    logger.info('Subscribed to job:completed channel');
+  }
+});
+
+subscriber.subscribe('job:failed', (err, count) => {
+  if (err) {
+    logger.error('Failed to subscribe to job:failed', err);
+  } else {
+    logger.info('Subscribed to job:failed channel');
+  }
+});
+
+// Procesar trabajos en la cola
+videoQueue.process(config.maxConcurrentJobs, async (job) => {
+  const { jobId, inputPath, outputPath, options } = job.data;
+  logger.info(`Processing job ${jobId}`);
+
+  try {
+    const result = await convertVideoWithProgress(jobId, inputPath, outputPath, options, job);
+    return result;
+  } catch (error) {
+    logger.error(`Job ${jobId} failed:`, error);
+    throw error;
+  }
+});
+
+// ===================== TRACKING DE PROCESOS FFMPEG =====================
+const activeFFmpegProcesses = new Map();
+
+// ===================== GESTIÓN DE TRABAJOS =====================
+
+class JobManager {
+  constructor() {
+    this.jobs = new Map();
+    this.bullJobIds = new Map(); // Mapeo jobId -> Bull job ID
+    this.emitter = new EventEmitter();
+  }
+
+  createJob(data) {
+    const jobId = uuidv4();
+    const job = {
+      id: jobId,
+      ...data,
+      status: 'queued',
+      progress: 0,
+      createdAt: Date.now(),
+      metadata: {}
+    };
+    this.jobs.set(jobId, job);
+    this.emitter.emit('job:created', job);
+    return job;
+  }
+
+  // Vincular job con Bull job
+  setBullJobId(jobId, bullJobId) {
+    this.bullJobIds.set(jobId, bullJobId);
+  }
+
+  getBullJobId(jobId) {
+    return this.bullJobIds.get(jobId);
+  }
+
+  updateJob(jobId, updates) {
+    const job = this.jobs.get(jobId);
+    if (job) {
+      Object.assign(job, updates);
+      this.emitter.emit('job:updated', job);
+      io.to(jobId).emit('job:update', job);
+    }
+    return job;
+  }
+
+  getJob(jobId) {
+    return this.jobs.get(jobId);
+  }
+
+  getAllJobs(userId = null) {
+    const jobs = Array.from(this.jobs.values());
+    if (userId) {
+      return jobs.filter(job => job.userId === userId);
+    }
+    return jobs;
+  }
+
+  deleteJob(jobId) {
+    const job = this.jobs.get(jobId);
+    if (job) {
+      this.jobs.delete(jobId);
+      this.bullJobIds.delete(jobId);
+      this.emitter.emit('job:deleted', job);
+    }
+    return job;
+  }
+}
+
+const jobManager = new JobManager();
+
+// ===================== PRESETS =====================
+
 const PRESETS = {
-  // H.264 Presets
+  // Presets básicos
+  'ultra': {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    crf: 15,
+    preset: 'veryslow',
+    audioBitrate: '320k',
+    description: 'Calidad ultra para archivos importantes',
+    allowCustomOptions: true
+  },
   'high-quality': {
     videoCodec: 'libx264',
     audioCodec: 'aac',
     crf: 18,
     preset: 'slow',
     audioBitrate: '256k',
-    description: 'Máxima calidad H.264, archivos grandes'
+    description: 'Calidad alta para la mayoría de los usos',
+    allowCustomOptions: true
   },
   'balanced': {
     videoCodec: 'libx264',
@@ -49,7 +340,8 @@ const PRESETS = {
     crf: 23,
     preset: 'medium',
     audioBitrate: '192k',
-    description: 'Balance óptimo calidad/tamaño'
+    description: 'Calidad equilibrada y tamaño de archivo',
+    allowCustomOptions: true
   },
   'fast': {
     videoCodec: 'libx264',
@@ -57,250 +349,408 @@ const PRESETS = {
     crf: 28,
     preset: 'fast',
     audioBitrate: '128k',
-    description: 'Conversión rápida, menor calidad'
+    description: 'Rápido con calidad decente',
+    allowCustomOptions: true
   },
-  'web-optimized': {
-    videoCodec: 'libx264',
-    audioCodec: 'aac',
-    crf: 23,
-    preset: 'medium',
-    audioBitrate: '128k',
-    extraOptions: ['-movflags', '+faststart', '-profile:v', 'main', '-level', '4.0'],
-    description: 'Optimizado para streaming web'
-  },
-  
-  // H.265/HEVC Presets
-  'hevc-high': {
-    videoCodec: 'libx265',
-    audioCodec: 'aac',
-    crf: 20,
-    preset: 'slow',
-    audioBitrate: '256k',
-    description: 'H.265 alta calidad, mejor compresión que H.264'
-  },
-  'hevc-balanced': {
-    videoCodec: 'libx265',
-    audioCodec: 'aac',
-    crf: 25,
-    preset: 'medium',
-    audioBitrate: '192k',
-    description: 'H.265 equilibrado'
-  },
-  'hevc-fast': {
-    videoCodec: 'libx265',
-    audioCodec: 'aac',
-    crf: 28,
-    preset: 'fast',
-    audioBitrate: '128k',
-    description: 'H.265 conversión rápida'
-  },
-  
-  // AV1 Presets
-  'av1-high': {
-    videoCodec: 'libaom-av1',
-    audioCodec: 'opus',
-    crf: 25,
-    preset: 4,
-    audioBitrate: '192k',
-    description: 'AV1 alta calidad, compresión excelente, muy lento'
-  },
-  'av1-balanced': {
+
+  // Presets avanzados
+  'av1': {
     videoCodec: 'libaom-av1',
     audioCodec: 'opus',
     crf: 30,
     preset: 6,
     audioBitrate: '128k',
-    description: 'AV1 equilibrado, buena compresión'
+    description: 'AV1 codec para mejor compresión que H.264 y H.265',
+    allowCustomOptions: true
   },
-  'av1-fast': {
-    videoCodec: 'libaom-av1',
-    audioCodec: 'opus',
-    crf: 35,
-    preset: 8,
+  'hevc': {
+    videoCodec: 'libx265',
+    audioCodec: 'aac',
+    crf: 28,
+    preset: 'medium',
     audioBitrate: '128k',
-    description: 'AV1 rápido (aunque sigue siendo lento)'
+    description: 'H.265/HEVC para mejor compresión que H.264',
+    allowCustomOptions: true
   },
-  
-  // VP9 Presets
-  'vp9-high': {
-    videoCodec: 'libvpx-vp9',
-    audioCodec: 'opus',
-    crf: 20,
-    preset: 'good',
-    audioBitrate: '192k',
-    extraOptions: ['-row-mt', '1', '-tile-columns', '2'],
-    description: 'VP9 alta calidad, buen balance'
-  },
-  'vp9-balanced': {
+  'vp9': {
     videoCodec: 'libvpx-vp9',
     audioCodec: 'opus',
     crf: 31,
     preset: 'good',
     audioBitrate: '128k',
-    extraOptions: ['-row-mt', '1', '-tile-columns', '2'],
-    description: 'VP9 equilibrado'
+    description: 'VP9 mayor compabilidad web',
+    allowCustomOptions: true
   },
-  
-  // VP8 Presets
-  'vp8-web': {
-    videoCodec: 'libvpx',
-    audioCodec: 'opus',
-    crf: 10,
-    preset: 'good',
-    audioBitrate: '128k',
-    description: 'VP8 para web (WebM)'
-  },
-  
-  // Theora Preset (libre y antiguo)
-  'theora': {
-    videoCodec: 'libtheora',
-    audioCodec: 'opus',
-    crf: 7,
-    preset: null,
-    audioBitrate: '192k',
-    description: 'Theora (formato libre, poco usado)'
-  },
-  
-  // Presets específicos por uso
-  'archive-quality': {
-    videoCodec: 'libx264',
-    audioCodec: 'flac',
-    crf: 0,
-    preset: 'veryslow',
-    audioBitrate: null,
-    extraOptions: ['-qp', '0'],
-    description: 'Archivado sin pérdida (H.264 lossless + FLAC)'
-  },
-  'social-media': {
+
+  // Presets para redes sociales
+  'youtube-4k': {
     videoCodec: 'libx264',
     audioCodec: 'aac',
-    crf: 23,
-    preset: 'fast',
-    audioBitrate: '128k',
-    extraOptions: ['-movflags', '+faststart', '-profile:v', 'high', '-level', '4.2', '-pix_fmt', 'yuv420p'],
-    description: 'Optimizado para redes sociales (Instagram, Twitter, etc.)'
+    crf: 18,
+    preset: 'slow',
+    audioBitrate: '256k',
+    resolution: '3840x2160',
+    fps: 30,
+    description: 'Optimizado para YouTube 4K',
+    extraOptions: ['-movflags', '+faststart', '-pix_fmt', 'yuv420p'],
+    allowCustomOptions: true
   },
   'youtube-1080p': {
     videoCodec: 'libx264',
     audioCodec: 'aac',
-    crf: 21,
-    preset: 'slow',
+    crf: 23,
+    preset: 'medium',
     audioBitrate: '192k',
-    extraOptions: ['-movflags', '+faststart', '-profile:v', 'high', '-bf', '2', '-g', '30'],
-    description: 'Optimizado para YouTube 1080p'
+    resolution: '1920x1080',
+    fps: 30,
+    description: 'Optimizado para YouTube 1080p',
+    extraOptions: ['-movflags', '+faststart', '-pix_fmt', 'yuv420p'],
+    allowCustomOptions: true
   },
-  'animation': {
-    videoCodec: 'libx264',
-    audioCodec: 'aac',
-    crf: 18,
-    preset: 'slow',
-    audioBitrate: '192k',
-    extraOptions: ['-tune', 'animation'],
-    description: 'Optimizado para contenido animado'
-  },
-  'screen-recording': {
-    videoCodec: 'libx264',
-    audioCodec: 'aac',
-    crf: 18,
-    preset: 'ultrafast',
-    audioBitrate: '192k',
-    extraOptions: ['-tune', 'zerolatency'],
-    description: 'Para grabaciones de pantalla'
-  },
-  
-  // Presets de baja resolución/móvil
-  'mobile-low': {
-    videoCodec: 'libx264',
-    audioCodec: 'aac',
-    crf: 28,
-    preset: 'veryfast',
-    audioBitrate: '96k',
-    extraOptions: ['-profile:v', 'baseline', '-level', '3.0'],
-    description: 'Móviles de gama baja, archivos pequeños'
-  },
-  'mobile-high': {
+  'instagram': {
     videoCodec: 'libx264',
     audioCodec: 'aac',
     crf: 23,
     preset: 'medium',
     audioBitrate: '128k',
-    extraOptions: ['-profile:v', 'main', '-level', '4.0'],
-    description: 'Móviles modernos'
+    resolution: '1080x1080',
+    fps: 30,
+    maxDuration: 60,
+    description: 'Formato cuadrado para publicaciones de Instagram',
+    extraOptions: ['-movflags', '+faststart'],
+    allowCustomOptions: true
+  },
+  'instagram-reel': {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    crf: 23,
+    preset: 'medium',
+    audioBitrate: '128k',
+    resolution: '1080x1920',
+    fps: 30,
+    maxDuration: 90,
+    description: 'Formato vertical para Reels de Instagram',
+    extraOptions: ['-movflags', '+faststart'],
+    allowCustomOptions: true
+  },
+  'tiktok': {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    crf: 23,
+    preset: 'medium',
+    audioBitrate: '128k',
+    resolution: '1080x1920',
+    fps: 30,
+    maxDuration: 180,
+    description: 'Optimizado para TikTok',
+    extraOptions: ['-movflags', '+faststart'],
+    allowCustomOptions: true
+  },
+  'twitter': {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    crf: 25,
+    preset: 'medium',
+    audioBitrate: '128k',
+    maxSize: '512MB',
+    maxDuration: 140,
+    description: 'Optimizado para Twitter/X',
+    extraOptions: ['-movflags', '+faststart'],
+    allowCustomOptions: true
+  },
+
+  // Presets especializados
+  'web-streaming': {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    crf: 23,
+    preset: 'medium',
+    audioBitrate: '128k',
+    description: 'Optimizado para streaming web',
+    extraOptions: [
+      '-movflags', '+faststart',
+      '-profile:v', 'main',
+      '-level', '4.0',
+      '-g', '48',
+      '-keyint_min', '48',
+      '-sc_threshold', '0'
+    ],
+    allowCustomOptions: true
+  },
+  'hls': {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    crf: 23,
+    preset: 'medium',
+    audioBitrate: '128k',
+    description: 'format HLS para streaming adaptativo',
+    outputFormat: 'hls',
+    extraOptions: [
+      '-hls_time', '10',
+      '-hls_list_size', '0',
+      '-hls_segment_filename', 'segment_%03d.ts'
+    ],
+    allowCustomOptions: true
+  },
+  'gif': {
+    description: 'Convertir a GIF animado',
+    outputFormat: 'gif',
+    fps: 10,
+    resolution: '480x?',
+    extraOptions: [
+      '-vf', 'fps=10,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse'
+    ],
+    allowCustomOptions: true
+  },
+  'mobile': {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    crf: 28,
+    preset: 'fast',
+    audioBitrate: '96k',
+    resolution: '720x?',
+    description: 'Optimizado para dispositivos móviles',
+    extraOptions: ['-profile:v', 'baseline', '-level', '3.0'],
+    allowCustomOptions: true
+  },
+
+  // Presets para videos raw/sin compresión
+  'raw-uncompressed': {
+    videoCodec: 'rawvideo',
+    audioCodec: 'pcm_s16le',
+    description: 'Video sin comprimir en contenedor AVI (archivos ENORMES - solo para clips cortos)',
+    outputFormat: 'avi',
+    maxDuration: 60,
+    extraOptions: [
+      '-pix_fmt', 'yuv420p',
+      '-vtag', 'I420'
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-uncompressed': {
+    videoCodec: 'rawvideo',
+    audioCodec: 'pcm_s16le',
+    description: 'AVI sin comprimir con YUV420P (mejor compatibilidad que RGB)',
+    outputFormat: 'avi',
+    maxDuration: 60,
+    extraOptions: [
+      '-pix_fmt', 'yuv420p',
+      '-vtag', 'I420'
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-uncompressed-rgb': {
+    videoCodec: 'rawvideo',
+    audioCodec: 'pcm_s16le',
+    description: 'AVI sin comprimir en RGB24 (archivos muy grandes)',
+    outputFormat: 'avi',
+    maxDuration: 60,
+    extraOptions: [
+      '-pix_fmt', 'rgb24',
+      '-vtag', 'DIB '
+    ],
+    allowCustomOptions: false
+  },
+
+  // LOSSLESS - Mejores opciones
+  'avi-lossless': {
+    videoCodec: 'huffyuv',
+    audioCodec: 'pcm_s16le',
+    description: 'AVI con compresión lossless HuffYUV (~50% del tamaño raw)',
+    outputFormat: 'avi',
+    extraOptions: [
+      '-pix_fmt', 'yuv422p',
+      '-pred', 'left'
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-ffv1': {
+    videoCodec: 'ffv1',
+    audioCodec: 'pcm_s16le',
+    description: 'AVI con FFV1 (mejor compresión lossless, ideal para archivo)',
+    outputFormat: 'avi',
+    extraOptions: [
+      '-level', '3',
+      '-coder', '1',
+      '-context', '1',
+      '-g', '1',
+      '-slices', '24',
+      '-slicecrc', '1'
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-utvideo': {
+    videoCodec: 'utvideo',
+    audioCodec: 'pcm_s16le',
+    description: 'AVI con UT Video (rápido y lossless, bueno para edición)',
+    outputFormat: 'avi',
+    extraOptions: [
+      '-pix_fmt', 'yuv422p',
+      '-pred', 'median'
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-dv': {
+    videoCodec: 'dvvideo',
+    audioCodec: 'pcm_s16le',
+    description: 'DV para edición profesional (25 Mbps, compatible)',
+    outputFormat: 'avi',
+    resolution: '720x576',
+    fps: 25,
+    extraOptions: [
+      '-pix_fmt', 'yuv420p'
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-dv-ntsc': {
+    videoCodec: 'dvvideo',
+    audioCodec: 'pcm_s16le',
+    description: 'DV NTSC para edición profesional (25 Mbps)',
+    outputFormat: 'avi',
+    resolution: '720x480',
+    fps: 30,
+    extraOptions: [
+      '-pix_fmt', 'yuv420p'
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-mjpeg-high': {
+    videoCodec: 'mjpeg',
+    audioCodec: 'pcm_s16le',
+    description: 'MJPEG alta calidad (compresión moderada, bueno para edición)',
+    outputFormat: 'avi',
+    extraOptions: [
+      '-q:v', '2',
+      '-pix_fmt', 'yuvj422p',
+      '-huffman', 'optimal'
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-mjpeg': {
+    videoCodec: 'mjpeg',
+    audioCodec: 'pcm_s16le',
+    description: 'MJPEG calidad media (balance tamaño/calidad)',
+    outputFormat: 'avi',
+    extraOptions: [
+      '-q:v', '5',
+      '-pix_fmt', 'yuvj420p'
+    ],
+    allowCustomOptions: false
+  },
+
+  // Opciones adicionales útiles
+  'prores-proxy': {
+    videoCodec: 'prores_ks',
+    audioCodec: 'pcm_s16le',
+    description: 'Apple ProRes Proxy (edición offline, tamaño pequeño)',
+    outputFormat: 'mov',
+    extraOptions: [
+      '-profile:v', '0',
+      '-pix_fmt', 'yuv422p10le'
+    ],
+    allowCustomOptions: false
+  },
+
+  'prores-lt': {
+    videoCodec: 'prores_ks',
+    audioCodec: 'pcm_s16le',
+    description: 'Apple ProRes LT (buena calidad para edición)',
+    outputFormat: 'mov',
+    extraOptions: [
+      '-profile:v', '1',
+      '-pix_fmt', 'yuv422p10le'
+    ],
+    allowCustomOptions: false
+  },
+
+  'prores-standard': {
+    videoCodec: 'prores_ks',
+    audioCodec: 'pcm_s16le',
+    description: 'Apple ProRes 422 (calidad estándar profesional)',
+    outputFormat: 'mov',
+    extraOptions: [
+      '-profile:v', '2',
+      '-pix_fmt', 'yuv422p10le'
+    ],
+    allowCustomOptions: false
+  },
+
+  'prores-hq': {
+    videoCodec: 'prores_ks',
+    audioCodec: 'pcm_s16le',
+    description: 'Apple ProRes 422 HQ (alta calidad, producción)',
+    outputFormat: 'mov',
+    extraOptions: [
+      '-profile:v', '3',
+      '-pix_fmt', 'yuv422p10le',
+      '-vendor', 'apl0'
+    ],
+    allowCustomOptions: false
   }
 };
 
-// Configuración de Multer para subir archivos
+// ===================== MULTER CONFIGURACIÓN =====================
+
 const storage = multer.diskStorage({
-  destination: uploadsDir,
+  destination: dirs.uploads,
   filename: (req, file, cb) => {
     const uniqueName = `${Date.now()}-${uuidv4()}${path.extname(file.originalname)}`;
     cb(null, uniqueName);
   }
 });
 
-const upload = multer({ 
+const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 500 * 1024 * 1024 // 500MB limite
+    fileSize: config.maxFileSize
   },
   fileFilter: (req, file, cb) => {
-    const videoExtensions = ['.mp4', '.avi', '.mov', '.mkv', '.hevc', '.h265', 
-                            '.webm', '.flv', '.wmv', '.m4v', '.3gp', '.ogv', '.mts', '.m2ts'];
+    const videoExtensions = ['.mp4', '.avi', '.mov', '.mkv', '.hevc', '.h265',
+      '.webm', '.flv', '.wmv', '.m4v', '.3gp', '.ogv',
+      '.mts', '.m2ts', '.ts', '.vob', '.mpg', '.mpeg'];
+    const audioExtensions = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma'];
     const fileExtension = path.extname(file.originalname).toLowerCase();
-    
-    if (file.mimetype.startsWith('video/') || 
-        file.mimetype.startsWith('audio/') || 
-        videoExtensions.includes(fileExtension)) {
+
+    if (file.mimetype.startsWith('video/') ||
+      file.mimetype.startsWith('audio/') ||
+      videoExtensions.includes(fileExtension) ||
+      audioExtensions.includes(fileExtension)) {
       cb(null, true);
     } else {
-      cb(new Error('Solo se permiten archivos de video y audio'), false);
+      cb(new Error('Only video and audio files are allowed'), false);
     }
   }
 });
 
-// Manejo de errores de Multer
-app.use((error, req, res, next) => {
-  if (error instanceof multer.MulterError) {
-    if (error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: 'Archivo demasiado grande (máx 500MB)' });
-    }
-    return res.status(400).json({ error: error.message });
-  }
+// ===================== FUNCIONES AUXILIARES =====================
 
-  if (error.message === 'Solo se permiten archivos de video y audio') {
-    return res.status(400).json({ error: error.message });
-  }
-  
-  console.error('Unhandled error:', error);
-  res.status(500).json({ error: 'Error interno del servidor' });
-});
-
-// Limpiar archivos temporales
-const cleanupFiles = async (...filePaths) => {
-  const cleanupPromises = filePaths.map(async (filePath) => {
-    if (filePath && fsSync.existsSync(filePath)) {
-      try {
-        await fs.unlink(filePath);
-        console.log('Limpiar archivos temporales:', filePath);
-      } catch (err) {
-        console.error('Error al eliminar el archivo:', filePath, err);
-      }
-    }
-  });
-  
-  await Promise.all(cleanupPromises);
+// Calcular hash de archivos
+const calculateFileHash = async (filePath) => {
+  const fileBuffer = await fs.readFile(filePath);
+  const hashSum = crypto.createHash('sha256');
+  hashSum.update(fileBuffer);
+  return hashSum.digest('hex');
 };
 
-// Obtener información del archivo multimedia
+// Información detallada del archivo multimedia
 const getMediaInfo = (filePath) => {
   return new Promise((resolve, reject) => {
     ffmpeg.ffprobe(filePath, (err, metadata) => {
       if (err) {
-        reject(err);
+        reject(new Error('Failed to retrieve media info'));
       } else {
         const videoStream = metadata.streams.find(s => s.codec_type === 'video');
         const audioStream = metadata.streams.find(s => s.codec_type === 'audio');
-        
+        const subtitleStream = metadata.streams.find(s => s.codec_type === 'subtitle');
+
         resolve({
           duration: metadata.format.duration,
           size: metadata.format.size,
@@ -308,17 +758,30 @@ const getMediaInfo = (filePath) => {
           format: metadata.format.format_name,
           video: videoStream ? {
             codec: videoStream.codec_name,
+            codecLong: videoStream.codec_long_name,
             width: videoStream.width,
             height: videoStream.height,
+            aspectRatio: videoStream.display_aspect_ratio,
             fps: eval(videoStream.r_frame_rate),
-            bitrate: videoStream.bit_rate
+            bitrate: videoStream.bit_rate,
+            pixelFormat: videoStream.pix_fmt,
+            colorSpace: videoStream.color_space,
+            profile: videoStream.profile
           } : null,
           audio: audioStream ? {
             codec: audioStream.codec_name,
+            codecLong: audioStream.codec_long_name,
             channels: audioStream.channels,
+            channelLayout: audioStream.channel_layout,
             sampleRate: audioStream.sample_rate,
-            bitrate: audioStream.bit_rate
-          } : null
+            bitrate: audioStream.bit_rate,
+            bitDepth: audioStream.bits_per_sample
+          } : null,
+          subtitle: subtitleStream ? {
+            codec: subtitleStream.codec_name,
+            language: subtitleStream.tags?.language
+          } : null,
+          metadata: metadata.format.tags || {}
         });
       }
     });
@@ -333,29 +796,61 @@ const formatSize = (bytes) => {
   return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
 };
 
-// Función principal de conversión
-const convertVideo = async (jobId, inputPath, outputPath, options = {}) => {
-  const {
-    preset = 'balanced',
-    resolution = null,
-    format = 'mp4',
-    startTime = null,
-    duration = null,
-    removeAudio = false,
-    customOptions = []
-  } = options;
-
-  const presetConfig = PRESETS[preset] || PRESETS['balanced'];
-  const job = activeJobs.get(jobId);
-  
-  let command = ffmpeg(inputPath);
-
-  // Aplicar configuración de video
-  if (presetConfig.videoCodec) {
-    command.videoCodec(presetConfig.videoCodec);
+const formatDuration = (seconds) => {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  let result;
+  if (h > 0) {
+    result = `${h}h ${m}m ${s}s`;
+  } else if (m > 0) {
+    result = `${m}m ${s}s`;
+  } else {
+    result = `${s}s`;
   }
+  return result;
+};
 
-  // Aplicar configuración de audio
+// ===================== FUNCIONES DE CONVERSIÓN =====================
+
+function buildVideoFilters({ speed, removeAudio, denoise, stabilize, crop, rotate, flip, watermark }) {
+  const videoFilters = [];
+
+  if (speed !== 1) {
+    videoFilters.push(`setpts=${1 / speed}*PTS`);
+  }
+  if (denoise) {
+    videoFilters.push('hqdn3d=4:3:6:4.5');
+  }
+  if (stabilize) {
+    videoFilters.push('deshake');
+  }
+  if (crop) {
+    videoFilters.push(`crop=${crop}`);
+  }
+  if (rotate) {
+    videoFilters.push(`rotate=${rotate}*PI/180`);
+  }
+  if (flip === 'horizontal') {
+    videoFilters.push('hflip');
+  } else if (flip === 'vertical') {
+    videoFilters.push('vflip');
+  }
+  if (watermark && fsSync.existsSync(watermark.path)) {
+    const position = watermark.position || 'bottomright';
+    const positions = {
+      topleft: 'x=10:y=10',
+      topright: 'x=W-w-10:y=10',
+      bottomleft: 'x=10:y=H-h-10',
+      bottomright: 'x=W-w-10:y=H-h-10',
+      center: 'x=(W-w)/2:y=(H-h)/2'
+    };
+    videoFilters.push(`movie=${watermark.path}[watermark];[in][watermark]overlay=${positions[position]}[out]`);
+  }
+  return videoFilters;
+}
+
+function applyAudioOptions(command, { removeAudio, presetConfig, normalizeAudio, speed }) {
   if (removeAudio) {
     command.noAudio();
   } else if (presetConfig.audioCodec) {
@@ -363,612 +858,1400 @@ const convertVideo = async (jobId, inputPath, outputPath, options = {}) => {
     if (presetConfig.audioBitrate) {
       command.audioBitrate(presetConfig.audioBitrate);
     }
+    if (normalizeAudio) {
+      command.audioFilters('loudnorm=I=-16:TP=-1.5:LRA=11');
+    }
+    if (speed !== 1) {
+      command.audioFilters(`atempo=${speed}`);
+    }
   }
+}
 
-  // Aplicar resolución si se especifica
-  if (resolution) {
-    command.size(resolution);
-  }
-
-  // Aplicar rango de tiempo si se especifica
-  if (startTime !== null) {
-    command.setStartTime(startTime);
-  }
-  if (duration !== null) {
-    command.setDuration(duration);
-  }
-
-  // Aplicar configuración de calidad
+function buildOutputOptions({ twoPass, presetConfig, jobId, customOptions }) {
   const outputOptions = [];
-  
-  if (presetConfig.videoCodec === 'libaom-av1') {
-    outputOptions.push(`-crf ${presetConfig.crf}`);
-    outputOptions.push(`-cpu-used ${presetConfig.preset}`);
-    outputOptions.push('-row-mt 1'); // Activar multi-threading
-  } else if (presetConfig.videoCodec === 'libx264') {
-    outputOptions.push(`-crf ${presetConfig.crf}`);
-    outputOptions.push(`-preset ${presetConfig.preset}`);
+  if (twoPass && presetConfig.videoCodec === 'libx264') {
+    outputOptions.push(
+      `-pass`, `2`,
+      `-passlogfile`, path.join(dirs.temp, `pass_${jobId}`)
+    );
   }
-
-  // Agregar opciones adicionales del preset
+  if (presetConfig.crf) {
+    outputOptions.push(`-crf`, `${presetConfig.crf}`);
+  }
+  if (presetConfig.preset) {
+    outputOptions.push(`-preset`, `${presetConfig.preset}`);
+  }
   if (presetConfig.extraOptions) {
     outputOptions.push(...presetConfig.extraOptions);
   }
+  if (customOptions.length > 0 && presetConfig.allowCustomOptions !== false) {
+    outputOptions.push(...customOptions);
+  }
+  return outputOptions;
+}
 
-  // Agregar opciones personalizadas
-  outputOptions.push(...customOptions);
+async function runTwoPass(inputPath, presetConfig, jobId) {
+  await new Promise((resolve, reject) => {
+    ffmpeg(inputPath)
+      .videoCodec('libx264')
+      .outputOptions([
+        `-pass`, `1`,
+        `-crf`, `${presetConfig.crf}`,
+        `-preset`, `${presetConfig.preset}`,
+        `-passlogfile`, path.join(dirs.temp, `pass_${jobId}`),
+        `-f`, `null`
+      ])
+      .output('/dev/null')
+      .on('end', resolve)
+      .on('error', reject)
+      .run();
+  });
+}
 
-  // Siempre agregar movflags para mp4
-  if (!outputOptions.some(opt => opt.includes('movflags'))) {
-    outputOptions.push('-movflags +faststart');
+function handleProgress(jobId, progress) {
+  const currentProgress = Math.min(99, Math.round(progress.percent || 0));
+  return redis.hset(`job:${jobId}`, {
+    status: 'processing',
+    progress: currentProgress,
+    currentTime: progress.timemark,
+    fps: progress.currentFps,
+    speed: progress.currentKbps,
+    updatedAt: Date.now()
+  }).then(() =>
+    redis.publish('job:progress', JSON.stringify({
+      jobId,
+      progress: currentProgress,
+      currentTime: progress.timemark,
+      fps: progress.currentFps
+    }))
+  );
+}
+
+async function handleEnd({ jobId, inputPath, outputPath }) {
+  const outputInfo = await getMediaInfo(outputPath);
+  const outputStats = await fs.stat(outputPath);
+
+  const result = {
+    success: true,
+    outputPath,
+    outputSize: outputStats.size,
+    outputInfo,
+    processingTime: Date.now() - jobManager.getJob(jobId).createdAt
+  };
+
+  await redis.publish('job:completed', JSON.stringify({
+    jobId,
+    result
+  }));
+
+  jobManager.updateJob(jobId, {
+    status: 'completed',
+    progress: 100,
+    result,
+    completedAt: Date.now()
+  });
+
+  return result;
+}
+
+async function handleError(jobId, err) {
+  logger.error(`Job ${jobId} error:`, err);
+  jobManager.updateJob(jobId, {
+    status: 'failed',
+    error: err?.message ?? String(err)
+  });
+  await redis.publish('job:failed', JSON.stringify({
+    jobId,
+    error: err?.message ?? String(err)
+  }));
+  let errorObj;
+  if (err instanceof Error) {
+    errorObj = err;
+  } else {
+    errorObj = new Error(`Job ${jobId} failed: ${err?.message ?? String(err)}`);
+  }
+  throw errorObj;
+}
+
+// Verificar si el archivo existe y está accesible
+const waitForFile = async (filePath, maxAttempts = 10, delayMs = 500) => {
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      await fs.access(filePath, fsSync.constants.R_OK);
+      const stats = await fs.stat(filePath);
+      if (stats.size > 0) {
+        return true;
+      }
+    } catch (err) {
+      logger.warn(`Attempt ${i + 1} to access file failed: ${err.message}`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+  throw new Error(`File not accessible after ${maxAttempts} attempts: ${filePath}`);
+};
+
+// Convertir timemark (HH:MM:SS.mmm) a segundos
+function timemarkToSeconds(timemark) {
+  if (!timemark || timemark === 'N/A' || timemark === '00:00:00.00') return 0;
+
+  // Manejar timemarks negativos
+  const isNegative = timemark.startsWith('-');
+  const cleanTimemark = timemark.replace('-', '');
+
+  try {
+    const parts = cleanTimemark.split(':');
+    if (parts.length !== 3) return 0;
+
+    const hours = Number.parseInt(parts[0]) || 0;
+    const minutes = Number.parseInt(parts[1]) || 0;
+    const seconds = Number.parseFloat(parts[2]) || 0;
+
+    const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+    return isNegative ? 0 : totalSeconds;
+  } catch (error) {
+    logger.warn(`Error parsing timemark: ${timemark}`, error);
+    return 0;
+  }
+}
+
+// Obtener duración del video con ffprobe
+const getVideoDuration = async (inputPath) => {
+  try {
+    // Esperar a que el archivo esté disponible
+    await waitForFile(inputPath);
+
+    return new Promise((resolve, reject) => {
+      ffmpeg.ffprobe(inputPath, (err, metadata) => {
+        if (err) {
+          logger.error(` Could not get duration for ${inputPath}:`, err.message);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        } else {
+          const duration = metadata.format.duration;
+          if (!duration || duration <= 0) {
+            logger.warn(` Invalid duration detected: ${duration}s`);
+            reject(new Error('Invalid video duration'));
+          } else {
+            resolve(duration);
+          }
+        }
+      });
+    });
+  } catch (error) {
+    logger.error(`Failed to verify or probe file ${inputPath}:`, error.message);
+    throw error;
+  }
+};
+
+// ===================== CONVERSIÓN CON PROGRESO =====================
+
+function handleProgressEvent({
+  jobId,
+  progress,
+  totalDuration,
+  lastProgress,
+  lastLoggedProgress,
+  startTime,
+  redis,
+  jobManager,
+  io
+}) {
+  // timemark actual / duración total
+  const currentTimeSeconds = timemarkToSeconds(progress.timemark);
+
+  if (currentTimeSeconds <= 0 || !totalDuration || totalDuration <= 0) {
+    return { lastProgress, lastLoggedProgress };
   }
 
-  command.outputOptions(outputOptions);
+  // Calcular porcentaje: (tiempo actual / duración total)
+  let currentProgress = Math.round((currentTimeSeconds / totalDuration) * 100);
+
+  // Asegurar que esté entre 0 y 99
+  currentProgress = Math.max(0, Math.min(99, currentProgress));
+
+  // Solo actualizar si hay cambio 
+  if (currentProgress === lastProgress) {
+    return { lastProgress, lastLoggedProgress };
+  }
+
+  lastProgress = currentProgress;
+
+  // Log detallado cada 5% o en ciertos puntos clave
+  if (
+    currentProgress !== lastLoggedProgress &&
+    (currentProgress % 5 === 0 || currentProgress > 95)
+  ) {
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    const eta =
+      currentProgress > 0
+        ? Math.round((elapsed / currentProgress) * (100 - currentProgress))
+        : 0;
+
+    logger.info(
+      `Job ${jobId} - ${currentProgress}% | ` +
+      `Time: ${progress.timemark}/${formatDuration(totalDuration)} | ` +
+      `FPS: ${progress.currentFps || 0} | ` +
+      `Speed: ${progress.currentKbps
+        ? (progress.currentKbps / 1000).toFixed(2) + "x"
+        : "N/A"
+      } | ` +
+      `ETA: ${formatDuration(eta)}`
+    );
+    lastLoggedProgress = currentProgress;
+  }
+
+  const progressData = {
+    status: "processing",
+    progress: currentProgress,
+    currentTime: progress.timemark || "00:00:00",
+    totalTime: formatDuration(totalDuration),
+    fps: progress.currentFps || 0,
+    speed: progress.currentKbps
+      ? `${(progress.currentKbps / 1000).toFixed(2)}x`
+      : "0x",
+    updatedAt: Date.now(),
+  };
+
+  // Guardar en Redis
+  redis.hset(`job:${jobId}`, progressData);
+
+  // Actualizar jobManager local
+  jobManager.updateJob(jobId, progressData);
+
+  // Publicar evento
+  redis.publish(
+    "job:progress",
+    JSON.stringify({
+      jobId,
+      ...progressData,
+    })
+  );
+
+  // Emitir via Socket.IO
+  io.to(jobId).emit("job:update", {
+    id: jobId,
+    jobId: jobId,
+    ...progressData,
+  });
+
+  return { lastProgress, lastLoggedProgress };
+}
+
+async function handleJobError(jobId, err, redis, jobManager, io, reject) {
+  logger.error(`Job ${jobId} failed:`, err);
+
+  const errorData = {
+    status: "failed",
+    progress: 0,
+    error: err.message || String(err),
+  };
+
+  // Actualizar Redis
+  await redis.hset(`job:${jobId}`, errorData);
+
+  // Actualizar jobManager
+  jobManager.updateJob(jobId, errorData);
+
+  // Publicar evento de error
+  await redis.publish(
+    "job:failed",
+    JSON.stringify({
+      jobId,
+      error: err.message || String(err),
+    })
+  );
+
+  // Emitir via Socket.IO
+  io.to(jobId).emit("job:update", {
+    id: jobId,
+    jobId: jobId,
+    ...errorData,
+  });
+
+  reject(err instanceof Error ? err : new Error(String(err)));
+}
+
+// Validar duración solicitada vs duración real del video
+async function getValidatedDuration(inputPath, startTime, duration, jobId) {
+  const fileExists = await fs.access(inputPath)
+    .then(() => true)
+    .catch(() => false);
+  if (!fileExists) {
+    throw new Error(`Input file does not exist: ${inputPath}`);
+  }
+  let totalDuration = await getVideoDuration(inputPath);
+  if (duration !== null && duration > 0) {
+    totalDuration = Math.min(duration, totalDuration - (startTime || 0));
+  } else if (startTime !== null && startTime > 0) {
+    totalDuration = totalDuration - startTime;
+  }
+  return totalDuration;
+}
+
+// Validar presets raw para duración máxima
+async function validateRawPreset(preset, duration) {
+  const rawPresets = [
+    'raw-uncompressed',
+    'avi-uncompressed',
+    'avi-uncompressed-rgb'
+  ];
+
+  if (rawPresets.includes(preset)) {
+    const presetConfig = PRESETS[preset];
+
+    if (presetConfig.maxDuration && duration > presetConfig.maxDuration) {
+      throw new Error(
+        `El preset "${preset}" está limitado a ${presetConfig.maxDuration} segundos ` +
+        `para evitar archivos masivos. Tu video dura ${Math.round(duration)} segundos. ` +
+        `Usa un preset con compresión lossless como "avi-ffv1" o "avi-lossless" en su lugar.`
+      );
+    }
+  }
+}
+
+// LIMPIEZA DESPUÉS DE PROCESAMIENTO 
+async function cleanupAfterProcessing(jobId, inputPath) {
+  if (!cleanupConfig.deleteInputAfterProcessing) return;
+
+  try {
+    if (fsSync.existsSync(inputPath)) {
+      await fs.unlink(inputPath);
+      logger.info(`Deleted input file after processing: ${inputPath}`);
+    }
+  } catch (error) {
+    logger.error(`Failed to delete input file ${inputPath}:`, error);
+  }
+}
+
+//LIMPIEZA DESPUÉS DE DESCARGA DEL USUARIO
+async function cleanupAfterDownload(jobId, outputPath) {
+  if (!cleanupConfig.deleteOutputAfterDownload) return;
+
+  try {
+    const downloadCount = downloadTracker.get(jobId) || 0;
+    downloadTracker.set(jobId, downloadCount + 1);
+
+    if (downloadCount + 1 >= cleanupConfig.maxDownloads) {
+      // Esperar un poco para asegurar que la descarga terminó
+      setTimeout(async () => {
+        try {
+          if (fsSync.existsSync(outputPath)) {
+            await fs.unlink(outputPath);
+            logger.info(`Deleted output file after download: ${outputPath}`);
+          }
+
+          // Limpiar el job del sistema
+          jobManager.deleteJob(jobId);
+          await redis.del(`job:${jobId}`);
+          downloadTracker.delete(jobId);
+
+          logger.info(`Cleaned up job ${jobId} after download`);
+        } catch (err) {
+          logger.error(`Error in delayed cleanup for job ${jobId}:`, err);
+        }
+      }, 5000); // 5 segundos de delay
+    }
+  } catch (error) {
+    logger.error(`Failed to cleanup after download for job ${jobId}:`, error);
+  }
+}
+
+// Función principal de conversión con progreso
+const convertVideoWithProgress = async (
+  jobId,
+  inputPath,
+  outputPath,
+  options = {},
+  bullJob = null
+) => {
+  const {
+    preset = "balanced",
+    resolution = null,
+    format = "mp4",
+    startTime = null,
+    duration = null,
+    removeAudio = false,
+    customOptions = [],
+    watermark = null,
+    subtitles = null,
+    twoPass = false,
+    normalizeAudio = false,
+    denoise = false,
+    stabilize = false,
+    speed = 1,
+    crop = null,
+    rotate = null,
+    flip = null,
+  } = options;
+
+  let totalDuration;
+  try {
+    totalDuration = await getValidatedDuration(inputPath, startTime, duration, jobId);
+    await validateRawPreset(preset, totalDuration);
+  } catch (error) {
+    logger.error(`Job ${jobId} - Validation failed:`, error);
+    const errorMessage = error.message || `Cannot process video: ${error}`;
+    
+    await redis.hset(`job:${jobId}`, {
+      status: "failed",
+      error: errorMessage,
+    });
+    
+    jobManager.updateJob(jobId, {
+      status: "failed",
+      error: errorMessage,
+    });
+    
+    await redis.publish("job:failed", JSON.stringify({ jobId, error: errorMessage }));
+    throw error;
+  }
+
+  const presetConfig = PRESETS[preset] || PRESETS["balanced"];
+  let command = ffmpeg(inputPath);
+
+  // Guardar referencia del comando FFmpeg
+  activeFFmpegProcesses.set(jobId, command);
+
+  // Aplicar opciones al comando
+  function applyCommandOptions(command) {
+    if (startTime !== null) command.setStartTime(startTime);
+    if (duration !== null) command.setDuration(duration);
+    const videoFilters = buildVideoFilters({
+      speed, removeAudio, denoise, stabilize, crop, rotate, flip, watermark,
+    });
+    if (videoFilters.length > 0) command.videoFilters(videoFilters);
+    if (subtitles && fsSync.existsSync(subtitles)) {
+      command.outputOptions(["-vf", `subtitles=${subtitles}`]);
+    }
+    if (presetConfig.videoCodec) command.videoCodec(presetConfig.videoCodec);
+    applyAudioOptions(command, { removeAudio, presetConfig, normalizeAudio, speed });
+    if (resolution || presetConfig.resolution) {
+      command.size(resolution || presetConfig.resolution);
+    }
+    if (presetConfig.fps) command.fps(presetConfig.fps);
+    const outputOptions = buildOutputOptions({
+      twoPass, presetConfig, jobId, customOptions,
+    });
+    command.outputOptions(outputOptions);
+    
+    const aviPresets = ['raw-uncompressed', 'avi-uncompressed', 'avi-lossless',
+      'avi-ffv1', 'avi-utvideo', 'avi-dv', 'avi-mjpeg'];
+    
+    if (aviPresets.includes(preset)) {
+      command.toFormat('avi');
+    } else {
+      command.toFormat(format);
+    }
+  }
+
+  applyCommandOptions(command);
+
+  if (twoPass && presetConfig.videoCodec === "libx264") {
+    try {
+      await runTwoPass(inputPath, presetConfig, jobId);
+    } catch (error) {
+      logger.warn(`Two-pass encoding failed, continuing with single pass:`, error.message);
+    }
+  }
+
+  let progressUpdateInterval = null;
+  let isCancelled = false;
 
   return new Promise((resolve, reject) => {
+    let lastProgress = -1;
+    let lastLoggedProgress = -1;
+    const startTimeMs = Date.now();
+
     command
-      .on("start", (commandLine) => {
-        console.log('FFmpeg process started for job:', jobId);
-        console.log('Command:', commandLine);
-        if (job) {
-          job.status = 'processing';
-          job.startTime = Date.now();
-        }
-      })
-      .on("progress", (progress) => {
-        if (job) {
-          job.progress = Math.round(progress.percent) || 0;
-          job.currentTime = progress.timemark;
-          jobEmitter.emit('progress', { jobId, progress: job.progress });
-        }
-        console.log(`Job ${jobId}: ${job?.progress}% done`);
-      })
-      .on("end", async () => {
-        console.log(`Conversion completed for job: ${jobId}`);
+      .on("progress", async (progress) => {
+        if (isCancelled) return;
         
         try {
-          // Obtener estadísticas del archivo de salida
-          const stats = await fs.stat(outputPath);
-          const mediaInfo = await getMediaInfo(outputPath);
+          const result = handleProgressEvent({
+            jobId, progress, totalDuration, lastProgress, lastLoggedProgress,
+            startTime: startTimeMs, redis, jobManager, io,
+          });
+          lastProgress = result.lastProgress;
+          lastLoggedProgress = result.lastLoggedProgress;
+        } catch (error) {
+          logger.error(`Error updating progress for job ${jobId}:`, error);
+        }
+      })
+      .on("end", async () => {
+        if (isCancelled) return;
+        
+        try {
+          if (progressUpdateInterval) clearInterval(progressUpdateInterval);
+          activeFFmpegProcesses.delete(jobId);
           
-          if (job) {
-            job.status = 'completed';
-            job.progress = 100;
-            job.endTime = Date.now();
-            job.outputSize = stats.size;
-            job.outputInfo = mediaInfo;
-            jobEmitter.emit('completed', { jobId });
-          }
+          const totalTime = Math.round((Date.now() - startTimeMs) / 1000);
+          logger.info(`Job ${jobId} - Encoding completed in ${formatDuration(totalTime)}`);
           
-          resolve({
+          const outputInfo = await getMediaInfo(outputPath);
+          const outputStats = await fs.stat(outputPath);
+          const processingTime = Date.now() - jobManager.getJob(jobId).createdAt;
+          
+          const result = {
             success: true,
             outputPath,
-            size: stats.size,
-            info: mediaInfo
+            outputSize: outputStats.size,
+            outputSizeFormatted: formatSize(outputStats.size),
+            outputInfo,
+            processingTime,
+            processingTimeFormatted: formatDuration(processingTime / 1000),
+          };
+          
+          await redis.hset(`job:${jobId}`, {
+            status: "completed",
+            progress: 100,
+            result: JSON.stringify(result),
+            completedAt: Date.now(),
           });
+          
+          jobManager.updateJob(jobId, {
+            status: "completed",
+            progress: 100,
+            result,
+            completedAt: Date.now(),
+          });
+          
+          await redis.publish("job:completed", JSON.stringify({ jobId, result }));
+          
+          io.to(jobId).emit("job:update", {
+            id: jobId,
+            jobId: jobId,
+            status: "completed",
+            progress: 100,
+            result,
+          });
+          
+          await cleanupAfterProcessing(jobId, inputPath);
+          logger.info(`Job ${jobId} completed successfully in ${formatDuration(totalTime)}`);
+          resolve(result);
         } catch (error) {
-          reject(error);
+          logger.error(`Error finalizing job ${jobId}:`, error);
+          reject(error instanceof Error ? error : new Error(String(error)));
         }
       })
-      .on("error", (err) => {
-        console.error(`FFmpeg error for job ${jobId}:`, err);
-        if (job) {
-          job.status = 'failed';
-          job.error = err.message;
-          jobEmitter.emit('error', { jobId, error: err.message });
+      .on("error", async (err) => {
+        if (progressUpdateInterval) clearInterval(progressUpdateInterval);
+        activeFFmpegProcesses.delete(jobId);
+        
+        // Si fue cancelado, no tratarlo como error
+        if (isCancelled) {
+          logger.info(`Job ${jobId} was cancelled by user`);
+          return; // No llamar reject
         }
-        reject(err);
+        
+        try {
+          await handleJobError(jobId, err, redis, jobManager, io, reject);
+        } catch (error) {
+          logger.error(`Error handling job ${jobId} failure:`, error);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
       })
       .save(outputPath);
+
+    // Función para cancelar el proceso
+    command.cancel = () => {
+      isCancelled = true;
+      try {
+        command.kill('SIGKILL'); // Matar el proceso FFmpeg
+        logger.info(`FFmpeg process killed for job ${jobId}`);
+      } catch (err) {
+        logger.error(`Error killing FFmpeg for job ${jobId}:`, err);
+      }
+    };
+
+    progressUpdateInterval = setInterval(async () => {
+      if (isCancelled) return;
+      
+      try {
+        const jobData = await redis.hgetall(`job:${jobId}`);
+        if (jobData && jobData.status === "processing") {
+          const lastUpdate = Number.parseInt(jobData.updatedAt || 0);
+          const now = Date.now();
+
+          if (now - lastUpdate > 20000) {
+            logger.warn(
+              `Job ${jobId} seems stalled (last update: ${Math.round(
+                (now - lastUpdate) / 1000
+              )}s ago)`
+            );
+
+            io.to(jobId).emit("job:warning", {
+              id: jobId,
+              jobId: jobId,
+              message: "Processing appears to be stalled",
+              lastUpdate: new Date(lastUpdate).toISOString(),
+            });
+          }
+        }
+      } catch (error) {
+        logger.error(`Error in progress interval for job ${jobId}:`, error);
+      }
+    }, 10000);
   });
 };
 
-// API rutas
+// ===================== RUTAS DE LA API =====================
 
-// Obtener presets disponibles
-app.get("/presets", (req, res) => {
-  const presetInfo = Object.entries(PRESETS).map(([name, config]) => ({
-    name,
-    description: getPresetDescription(name),
-    config: {
-      videoCodec: config.videoCodec,
-      audioCodec: config.audioCodec,
-      quality: config.crf
+// Comprobar estado del servidor
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    redis: redis.status,
+    jobs: {
+      total: jobManager.jobs.size,
+      queued: Array.from(jobManager.jobs.values()).filter(j => j.status === 'queued').length,
+      processing: Array.from(jobManager.jobs.values()).filter(j => j.status === 'processing').length,
+      completed: Array.from(jobManager.jobs.values()).filter(j => j.status === 'completed').length,
+      failed: Array.from(jobManager.jobs.values()).filter(j => j.status === 'failed').length
     }
-  }));
-  
-  res.json(presetInfo);
+  });
 });
 
-function getPresetDescription(preset) {
-  return PRESETS[preset]?.description || 'Preset personalizado';
-}
+// Obtener presets disponibles
+app.get('/api/presets', (req, res) => {
+  res.json(PRESETS);
+});
 
-// Principal endpoint de conversión
-app.post("/convert", upload.single("file"), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "No se subió ningún archivo" });
-  }
-
-  const jobId = uuidv4();
-  const inputPath = req.file.path;
-  
+// Obtener formatos soportados
+app.get('/api/formats', async (req, res) => {
   try {
-    // Obtener información del archivo de entrada
-    const inputInfo = await getMediaInfo(inputPath);
+    const { stdout } = await execPromise('ffmpeg -formats');
+    const formats = stdout.split('\n')
+      .filter(line => /^\s*[DE]/.exec(line))
+      .map(line => {
+        const regex = /^\s*([DE]+)\s+(\S+)\s+(.*)/;
+        const match = regex.exec(line);
+        if (match) {
+          return {
+            support: match[1],
+            format: match[2],
+            description: match[3].trim()
+          };
+        }
+      })
+      .filter(Boolean);
 
-    // Analizar opciones de conversión
-    const {
-      preset = 'balanced',
-      resolution = null,
-      format = 'mp4',
-      startTime = null,
-      duration = null,
-      removeAudio = false
-    } = req.body;
+    res.json(formats);
+  } catch (error) {
+    logger.error('Failed to get formats:', error);
+    res.status(500).json({ error: 'Failed to get formats' });
+  }
+});
 
-    const outputFilename = `${jobId}-converted.${format}`;
-    const outputPath = path.join(outputsDir, outputFilename);
+// Obtener códecs soportados
+app.get('/api/codecs', async (req, res) => {
+  try {
+    const { stdout } = await execPromise('ffmpeg -codecs');
+    const codecs = stdout.split('\n')
+      .filter(line => /^\s*[DEVASIL]/.exec(line))
+      .map(line => {
+        const regex = /^\s*([DEVASIL.]+)\s+(\S+)\s+(.*)/;
+        const match = regex.exec(line);
+        if (match) {
+          return {
+            support: match[1],
+            codec: match[2],
+            description: match[3].trim()
+          };
+        }
+      })
+      .filter(Boolean);
 
-    // Crear objeto de Job
-    const job = {
-      id: jobId,
-      status: 'pending',
-      progress: 0,
-      inputFile: req.file.originalname,
-      inputSize: req.file.size,
-      inputInfo,
-      outputFile: outputFilename,
-      preset,
-      options: { resolution, format, startTime, duration, removeAudio },
-      createdAt: Date.now()
-    };
+    res.json({
+      video: codecs.filter(c => c.support.includes('V')),
+      audio: codecs.filter(c => c.support.includes('A'))
+    });
+  } catch (error) {
+    logger.error('Failed to get codecs:', error);
+    res.status(500).json({ error: 'Failed to get codecs' });
+  }
+});
 
-    activeJobs.set(jobId, job);
+app.get('/api/job/:jobId', async (req, res) => {
+  try {
+    const jobId = req.params.jobId;
 
-    // Empezar conversión asincrónica
-    convertVideo(jobId, inputPath, outputPath, {
-      preset,
-      resolution,
-      format,
-      startTime,
-      duration,
-      removeAudio
-    }).then(async (result) => {
-      // Conversión exitosa
-      job.downloadUrl = `/download/${jobId}`;
-      console.log(`Job ${jobId} completed successfully`);
-    }).catch(async (error) => {
-      // Conversión fallida
-      console.error(`Job ${jobId} failed:`, error);
-      await cleanupFiles(inputPath, outputPath);
+    // Primero intentar desde jobManager
+    let job = jobManager.getJob(jobId);
+
+    // Si no está en memoria, buscar en Redis
+    if (!job) {
+      const jobData = await redis.hgetall(`job:${jobId}`);
+      if (jobData && Object.keys(jobData).length > 0) {
+        job = {
+          id: jobId,
+          status: jobData.status,
+          progress: Number.parseInt(jobData.progress || 0),
+          currentTime: jobData.currentTime,
+          fps: Number.parseFloat(jobData.fps || 0),
+          speed: jobData.speed,
+          error: jobData.error,
+          result: jobData.result ? JSON.parse(jobData.result) : null,
+          createdAt: Number.parseInt(jobData.createdAt || Date.now()),
+          updatedAt: Number.parseInt(jobData.updatedAt || Date.now())
+        };
+      }
+    }
+
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    res.json(job);
+  } catch (error) {
+    logger.error('Error fetching job:', error);
+    res.status(500).json({ error: 'Failed to fetch job' });
+  }
+});
+
+// Análisis de archivo multimedia
+app.post('/api/analyze', upload.single('media'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const filePath = req.file.path;
+    const info = await getMediaInfo(filePath);
+    const hash = await calculateFileHash(filePath);
+
+    res.json({
+      file: {
+        name: req.file.originalname,
+        size: req.file.size,
+        path: filePath,
+        hash
+      },
+      info,
+      suggestions: suggestOptimalSettings(info)
     });
 
-    // Devolver respuesta inicial con jobId
-    res.json({
-      jobId,
-      status: 'processing',
-      message: 'Conversion started',
-      inputInfo: {
-        filename: req.file.originalname,
-        size: formatSize(req.file.size),
-        duration: inputInfo.duration ? `${Math.round(inputInfo.duration)}s` : 'unknown',
-        resolution: inputInfo.video ? `${inputInfo.video.width}x${inputInfo.video.height}` : 'unknown'
+    //Eliminar archivo después del análisis
+    setTimeout(async () => {
+      try {
+        if (fsSync.existsSync(filePath)) {
+          await fs.unlink(filePath);
+          logger.info(`✓ Deleted analyzed file: ${filePath}`);
+        }
+      } catch (err) {
+        logger.error(`Failed to delete analyzed file ${filePath}:`, err);
+      }
+    }, 5000); // 5 segundos de delay para que la respuesta llegue al cliente
+
+  } catch (error) {
+    logger.error('Analysis error:', error);
+    res.status(500).json({ error: 'Failed to analyze media', details: error.message });
+    
+    // Limpiar archivo en caso de error
+    if (req.file?.path && fsSync.existsSync(req.file.path)) {
+      try {
+        await fs.unlink(req.file.path);
+      } catch (unlinkError) {
+        logger.error('Failed to cleanup file after error:', unlinkError);
+      }
+    }
+  }
+});
+
+// Sugerir configuraciones óptimas basadas en el análisis
+const suggestOptimalSettings = (info) => {
+  const suggestions = [];
+
+  if (info.video) {
+    // Sugerencias de resolución
+    if (info.video.width >= 3840) {
+      suggestions.push({
+        type: 'resolution',
+        message: 'Video 4k. Considerar ajustar a 1080p para la mayoría de los usos.',
+        preset: 'youtube-1080p'
+      });
+    }
+
+    // Sugerencias de codec
+    if (info.video.codec === 'h264') {
+      suggestions.push({
+        type: 'codec',
+        message: 'Video en H.264. Considerar H.265/HEVC para mejor compresión.',
+        preset: 'hevc'
+      });
+    }
+
+    // Sugerencias de FPS
+    if (info.video.fps > 30) {
+      suggestions.push({
+        type: 'fps',
+        message: `Se ha detectado una alta tasa de fotogramas (${info.video.fps}fps). Considerar 30/60fps para reducir el tamaño del archivo.`,
+        option: { fps: 30 }
+      });
+    }
+  }
+
+  if (info.audio) {
+    // Sugerencias de bitrate de audio
+    if (info.audio.bitrate > 256000) {
+      suggestions.push({
+        type: 'audio',
+        message: 'Se ha detectado un alto bitrate de audio. 192kbps es suficiente para la mayoría de los casos de uso.',
+        option: { audioBitrate: '192k' }
+      });
+    }
+  }
+
+  // Sugerencias de tamaño de archivo
+  if (info.size > 1024 * 1024 * 1024) { // > 1GB
+    suggestions.push({
+      type: 'size',
+      message: 'Se ha detectado un archivo grande. Considerar usar el preset "balanced" o "fast".',
+      preset: 'balanced'
+    });
+  }
+
+  return suggestions;
+};
+
+// Conversión de video/audio
+app.post('/api/convert', upload.single('video'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const {
+      preset = 'balanced',
+      format = 'mp4',
+      resolution,
+      startTime,
+      duration,
+      removeAudio,
+      watermark,
+      subtitles,
+      twoPass,
+      normalizeAudio,
+      denoise,
+      stabilize,
+      speed,
+      crop,
+      rotate,
+      flip,
+      customOptions = []
+    } = req.body;
+
+    const inputPath = req.file.path;
+    const outputFilename = `${path.parse(req.file.filename).name}_converted.${format}`;
+    const outputPath = path.join(dirs.outputs, outputFilename);
+
+    const job = jobManager.createJob({
+      type: 'conversion',
+      inputPath,
+      outputPath,
+      inputName: req.file.originalname,
+      outputName: outputFilename,
+      options: req.body,
+      userId: req.headers['x-user-id'] || 'anonymous'
+    });
+
+    logger.info(`Job created: ${job.id} for file: ${req.file.originalname}`);
+
+    await redis.hset(`job:${job.id}`, {
+      status: 'queued',
+      progress: 0,
+      inputName: req.file.originalname,
+      outputName: outputFilename,
+      createdAt: Date.now()
+    });
+
+    // Agregar job a la cola y GUARDAR el Bull job ID
+    const bullJob = await videoQueue.add({
+      jobId: job.id,
+      inputPath,
+      outputPath,
+      options: {
+        preset,
+        format,
+        resolution,
+        startTime: startTime ? Number.parseFloat(startTime) : null,
+        duration: duration ? Number.parseFloat(duration) : null,
+        removeAudio: removeAudio === 'true',
+        watermark,
+        subtitles,
+        twoPass: twoPass === 'true',
+        normalizeAudio: normalizeAudio === 'true',
+        denoise: denoise === 'true',
+        stabilize: stabilize === 'true',
+        speed: speed ? Number.parseFloat(speed) : 1,
+        crop,
+        rotate: rotate ? Number.parseFloat(rotate) : null,
+        flip,
+        customOptions: Array.isArray(customOptions) ? customOptions : []
       }
     });
 
+    // Vincular el job ID con el Bull job ID
+    jobManager.setBullJobId(job.id, bullJob.id);
+
+    res.json({
+      jobId: job.id,
+      status: 'queued',
+      inputName: req.file.originalname,
+      outputName: outputFilename,
+      message: 'Video conversion job created successfully'
+    });
+
   } catch (error) {
-    console.error('Error processing request:', error);
-    await cleanupFiles(inputPath);
-    res.status(500).json({ error: 'Failed to process file', details: error.message });
+    logger.error('Conversion error:', error);
+    res.status(500).json({ error: 'Failed to start conversion', details: error.message });
   }
 });
 
-// Extracción de audio a MP3
-app.post("/extract-audio", upload.single("file"), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "Archivo no subido" });
-  }
-
-  const jobId = uuidv4();
-  const inputPath = req.file.path;
-  const { format = 'mp3', bitrate = '192k' } = req.body;
-  
-  const outputFilename = `${jobId}-audio.${format}`;
-  const outputPath = path.join(outputsDir, outputFilename);
-
+// Conversión por lotes
+app.post('/api/batch-convert', upload.array('videos', 10), async (req, res) => {
   try {
-    const inputInfo = await getMediaInfo(inputPath);
-    
-    if (!inputInfo.audio) {
-      await cleanupFiles(inputPath);
-      return res.status(400).json({ error: 'No se encontró flujo de audio en el archivo' });
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded' });
     }
 
-    const job = {
-      id: jobId,
-      type: 'audio-extraction',
-      status: 'processing',
-      progress: 0,
-      inputFile: req.file.originalname,
-      outputFile: outputFilename,
-      createdAt: Date.now()
-    };
+    const jobs = [];
+    const options = JSON.parse(req.body.options || '{}');
 
-    activeJobs.set(jobId, job);
+    for (const file of req.files) {
+      const inputPath = file.path;
+      const outputFilename = `${path.parse(file.filename).name}_converted.${options.format || 'mp4'}`;
+      const outputPath = path.join(dirs.outputs, outputFilename);
 
-    ffmpeg(inputPath)
-      .noVideo()
-      .audioCodec(format === 'mp3' ? 'libmp3lame' : 'aac')
-      .audioBitrate(bitrate)
-      .on("progress", (progress) => {
-        job.progress = Math.round(progress.percent) || 0;
-      })
-      .on("end", async () => {
-        job.status = 'completed';
-        job.downloadUrl = `/download/${jobId}`;
-        
-        res.json({
-          jobId,
-          status: 'completed',
-          downloadUrl: job.downloadUrl,
-          format,
-          bitrate
-        });
-        
-        // 1 hora después de la finalización, limpiar archivos
-        setTimeout(() => cleanupFiles(inputPath, outputPath), 3600000);
-      })
-      .on("error", async (err) => {
-        job.status = 'failed';
-        job.error = err.message;
-        await cleanupFiles(inputPath, outputPath);
-        res.status(500).json({ error: 'Extracción de audio fallida', details: err.message });
-      })
-      .save(outputPath);
+      const job = jobManager.createJob({
+        type: 'batch-conversion',
+        inputPath,
+        outputPath,
+        inputName: file.originalname,
+        outputName: outputFilename,
+        options,
+        userId: req.headers['x-user-id'] || 'anonymous'
+      });
+
+      await videoQueue.add({
+        jobId: job.id,
+        inputPath,
+        outputPath,
+        options
+      });
+
+      jobs.push(job.id);
+    }
+
+    res.json({
+      jobs,
+      message: `${jobs.length} conversion jobs created successfully`
+    });
 
   } catch (error) {
-    console.error('Error extracting audio:', error);
-    await cleanupFiles(inputPath);
-    res.status(500).json({ error: 'Error al procesar el archivo', details: error.message });
+    logger.error('Batch conversion error:', error);
+    res.status(500).json({ error: 'Failed to start batch conversion', details: error.message });
   }
 });
 
-// Estado del JOB
-app.get("/job/:jobId", (req, res) => {
-  const job = activeJobs.get(req.params.jobId);
-  
-  if (!job) {
-    return res.status(404).json({ error: 'Job no encontrado' });
-  }
+// Obtener todos los jobs
+app.get('/api/jobs', (req, res) => {
+  const userId = req.headers['x-user-id'];
+  const jobs = jobManager.getAllJobs(userId);
 
-  const response = {
-    id: job.id,
-    status: job.status,
-    progress: job.progress,
-    inputFile: job.inputFile,
-    outputFile: job.outputFile,
-    preset: job.preset,
-    options: job.options
-  };
-
-  if (job.status === 'completed') {
-    response.downloadUrl = job.downloadUrl;
-    response.outputSize = formatSize(job.outputSize);
-    response.processingTime = ((job.endTime - job.startTime) / 1000).toFixed(1) + 's';
-  } else if (job.status === 'failed') {
-    response.error = job.error;
-  }
-
-  res.json(response);
+  res.json(jobs);
 });
 
-// Sever-sent events para actualizaciones en tiempo real
-app.get("/job/:jobId/progress", (req, res) => {
+// Cancelar job
+app.delete('/api/job/:jobId', async (req, res) => {
   const jobId = req.params.jobId;
-  const job = activeJobs.get(jobId);
-  
+  const job = jobManager.getJob(jobId);
+
   if (!job) {
     return res.status(404).json({ error: 'Job not found' });
   }
 
-  // Comenzar SSE
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  try {
+    logger.info(`Attempting to cancel job ${jobId} (status: ${job.status})`);
 
-  // Enviar estado inicial
-  res.write(`data: ${JSON.stringify({ 
-    status: job.status, 
-    progress: job.progress 
-  })}\n\n`);
-
-  // Configurar listeners
-  const progressHandler = (data) => {
-    if (data.jobId === jobId) {
-      res.write(`data: ${JSON.stringify({ 
-        status: 'processing', 
-        progress: data.progress 
-      })}\n\n`);
+    // Detener el proceso FFmpeg si está activo
+    const ffmpegCommand = activeFFmpegProcesses.get(jobId);
+    if (ffmpegCommand && typeof ffmpegCommand.cancel === 'function') {
+      logger.info(`Killing FFmpeg process for job ${jobId}`);
+      ffmpegCommand.cancel();
+      activeFFmpegProcesses.delete(jobId);
     }
-  };
 
-  const completedHandler = (data) => {
-    if (data.jobId === jobId) {
-      res.write(`data: ${JSON.stringify({ 
-        status: 'completed', 
-        progress: 100,
-        downloadUrl: job.downloadUrl 
-      })}\n\n`);
-      cleanup();
+    // Cancelar el job en Bull queue
+    const bullJobId = jobManager.getBullJobId(jobId);
+    if (bullJobId) {
+      try {
+        const bullJob = await videoQueue.getJob(bullJobId);
+        if (bullJob) {
+          const state = await bullJob.getState();
+          logger.info(`Bull job ${bullJobId} state: ${state}`);
+          
+          // Intentar remover el job según su estado
+          if (state === 'active') {
+            // Si está activo, solo FFmpeg lo detendrá
+            await bullJob.remove();
+            logger.info(`Removed active Bull job ${bullJobId}`);
+          } else if (state === 'waiting' || state === 'delayed') {
+            await bullJob.remove();
+            logger.info(`Removed waiting/delayed Bull job ${bullJobId}`);
+          }
+        }
+      } catch (bullError) {
+        logger.warn(`Could not remove Bull job ${bullJobId}:`, bullError.message);
+      }
     }
-  };
 
-  const errorHandler = (data) => {
-    if (data.jobId === jobId) {
-      res.write(`data: ${JSON.stringify({ 
-        status: 'failed', 
-        error: data.error 
-      })}\n\n`);
-      cleanup();
-    }
-  };
+    // Actualizar estado en Redis y jobManager
+    await redis.hset(`job:${jobId}`, {
+      status: 'cancelled',
+      cancelledAt: Date.now(),
+      progress: 0
+    });
 
-  const cleanup = () => {
-    jobEmitter.removeListener('progress', progressHandler);
-    jobEmitter.removeListener('completed', completedHandler);
-    jobEmitter.removeListener('error', errorHandler);
-  };
+    jobManager.updateJob(jobId, {
+      status: 'cancelled',
+      cancelledAt: Date.now(),
+      progress: 0
+    });
 
-  jobEmitter.on('progress', progressHandler);
-  jobEmitter.on('completed', completedHandler);
-  jobEmitter.on('error', errorHandler);
+    // Notificar a través de Socket.IO
+    io.to(jobId).emit('job:update', {
+      id: jobId,
+      jobId: jobId,
+      status: 'cancelled',
+      progress: 0,
+      cancelledAt: Date.now()
+    });
 
-  // Limpiar listeners al cerrar la conexión
-  req.on('close', cleanup);
+    // Programar limpieza de archivos
+    setTimeout(async () => {
+      try {
+        if (job.inputPath && fsSync.existsSync(job.inputPath)) {
+          await fs.unlink(job.inputPath);
+          logger.info(`Deleted input file of cancelled job: ${job.inputPath}`);
+        }
+        if (job.outputPath && fsSync.existsSync(job.outputPath)) {
+          await fs.unlink(job.outputPath);
+          logger.info(`Deleted partial output file of cancelled job: ${job.outputPath}`);
+        }
+        
+        jobManager.deleteJob(jobId);
+        await redis.del(`job:${jobId}`);
+        downloadTracker.delete(jobId);
+        
+        logger.info(`Cleanup completed for cancelled job ${jobId}`);
+      } catch (err) {
+        logger.error(`Error cleaning cancelled job ${jobId}:`, err);
+      }
+    }, 2000);
+
+    res.json({ 
+      message: 'Job cancelled successfully',
+      jobId: jobId,
+      status: 'cancelled'
+    });
+
+  } catch (error) {
+    logger.error('Cancel job error:', error);
+    res.status(500).json({ 
+      error: 'Failed to cancel job',
+      details: error.message 
+    });
+  }
 });
 
 // Descargar archivo convertido
-app.get("/download/:jobId", async (req, res) => {
-  const job = activeJobs.get(req.params.jobId);
-  
+app.get('/api/download/:jobId', async (req, res) => {
+  const job = jobManager.getJob(req.params.jobId);
+
   if (!job) {
-    return res.status(404).json({ error: 'Job no encontrado' });
+    return res.status(404).json({ error: 'Job not found' });
   }
 
   if (job.status !== 'completed') {
-    return res.status(400).json({ error: 'Job no completado', status: job.status });
+    return res.status(400).json({ error: 'Job not completed yet' });
   }
 
-  const outputPath = path.join(outputsDir, job.outputFile);
-  
-  if (!fsSync.existsSync(outputPath)) {
-    return res.status(404).json({ error: 'Output file no encontrado' });
+  if (!fsSync.existsSync(job.outputPath)) {
+    return res.status(404).json({ error: 'Output file not found' });
   }
 
-  res.download(outputPath, job.outputFile, async (err) => {
-    if (err && !res.headersSent) {
-      console.error('Download error:', err);
-      res.status(500).json({ error: 'Descarga fallida' });
+  // Descargar el archivo
+  res.download(job.outputPath, job.outputName, async (err) => {
+    if (err) {
+      logger.error('Download error:', err);
+    } else {
+      // Limpiar después de descarga exitosa
+      logger.info(`Download completed for job ${req.params.jobId}`);
+      await cleanupAfterDownload(req.params.jobId, job.outputPath);
     }
-
-    // LLimpiar archivos 5 segundos después de la descarga
-    setTimeout(async () => {
-      const inputPath = path.join(uploadsDir, job.inputFile);
-      await cleanupFiles(inputPath, outputPath);
-      activeJobs.delete(req.params.jobId);
-    }, 5000);
   });
 });
 
-// Get all active jobs
-app.get("/jobs", (req, res) => {
-  const jobs = Array.from(activeJobs.values()).map(job => ({
-    id: job.id,
-    status: job.status,
-    progress: job.progress,
-    inputFile: job.inputFile,
-    preset: job.preset,
-    createdAt: job.createdAt
-  }));
-  
-  res.json(jobs);
-});
+// Transmitir video convertido
+app.get('/api/stream/:jobId', async (req, res) => {
+  const job = jobManager.getJob(req.params.jobId);
 
-// Revisar estado del servidor
-app.get("/health", async (req, res) => {
-  try {
-    // Revisar si ffmpeg está disponible
-    const ffmpegVersion = await new Promise((resolve) => {
-      ffmpeg.getAvailableFormats((err, formats) => {
-        resolve(!err);
-      });
-    });
+  if (!job || job.status !== 'completed') {
+    return res.status(404).json({ error: 'Video not available' });
+  }
 
-    const status = {
-      status: ffmpegVersion ? 'healthy' : 'degraded',
-      timestamp: new Date().toISOString(),
-      activeJobs: activeJobs.size,
-      ffmpeg: ffmpegVersion ? 'available' : 'unavailable',
-      diskSpace: await checkDiskSpace()
+  const videoPath = job.outputPath;
+  const stat = await fs.stat(videoPath);
+  const fileSize = stat.size;
+  const range = req.headers.range;
+
+  if (range) {
+    const parts = range.replace(/bytes=/, "").split("-");
+    const start = Number.parseInt(parts[0], 10);
+    const end = parts[1] ? Number.parseInt(parts[1], 10) : fileSize - 1;
+    const chunksize = (end - start) + 1;
+    const file = fsSync.createReadStream(videoPath, { start, end });
+    const head = {
+      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+      'Accept-Ranges': 'bytes',
+      'Content-Length': chunksize,
+      'Content-Type': 'video/mp4',
     };
-
-    res.status(ffmpegVersion ? 200 : 503).json(status);
-  } catch (error) {
-    res.status(503).json({
-      status: 'unhealthy',
-      error: error.message
-    });
+    res.writeHead(206, head);
+    file.pipe(res);
+  } else {
+    const head = {
+      'Content-Length': fileSize,
+      'Content-Type': 'video/mp4',
+    };
+    res.writeHead(200, head);
+    fsSync.createReadStream(videoPath).pipe(res);
   }
 });
 
-// Revisar espacio en disco
-async function checkDiskSpace() {
+// Comparar videos
+app.post('/api/compare', async (req, res) => {
   try {
-    const stats = await fs.stat(outputsDir);
-    return 'available';
-  } catch {
-    return 'unknown';
-  }
-}
+    const { originalJobId, convertedJobId } = req.body;
 
-// Observar y analizar propiedades del archivo multimedia
-app.post("/analyze", upload.single("file"), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "No se ha subido ningún archivo" });
-  }
+    const originalJob = jobManager.getJob(originalJobId);
+    const convertedJob = jobManager.getJob(convertedJobId);
 
-  const inputPath = req.file.path;
+    if (!originalJob || !convertedJob) {
+      return res.status(404).json({ error: 'Jobs not found' });
+    }
 
-  try {
-    const mediaInfo = await getMediaInfo(inputPath);
-    
+    const originalInfo = await getMediaInfo(originalJob.inputPath || originalJob.outputPath);
+    const convertedInfo = await getMediaInfo(convertedJob.outputPath);
+
+    const originalStats = await fs.stat(originalJob.inputPath || originalJob.outputPath);
+    const convertedStats = await fs.stat(convertedJob.outputPath);
+
     res.json({
-      filename: req.file.originalname,
-      size: formatSize(req.file.size),
-      ...mediaInfo,
-      duration: mediaInfo.duration ? `${Math.round(mediaInfo.duration)}s` : 'unknown',
-      recommendations: getRecommendations(mediaInfo)
+      original: {
+        info: originalInfo,
+        size: originalStats.size,
+        sizeFormatted: formatSize(originalStats.size)
+      },
+      converted: {
+        info: convertedInfo,
+        size: convertedStats.size,
+        sizeFormatted: formatSize(convertedStats.size)
+      },
+      comparison: {
+        sizeReduction: ((1 - convertedStats.size / originalStats.size) * 100).toFixed(2) + '%',
+      }
     });
 
-    // Limpiar después de analizar
-    await cleanupFiles(inputPath);
   } catch (error) {
-    console.error('Error analyzing file:', error);
-    await cleanupFiles(inputPath);
-    res.status(500).json({ error: 'Error al analizar el archivo' });
+    logger.error('Comparison error:', error);
+    res.status(500).json({ error: 'Failed to compare videos' });
   }
 });
 
-function getRecommendations(mediaInfo) {
-  const recommendations = [];
-  
-  if (mediaInfo.video) {
-    if (mediaInfo.video.width > 1920 || mediaInfo.video.height > 1080) {
-      recommendations.push('Considera reducir la resolución a 1080p para mejorar la compatibilidad');
-    }
-    if (mediaInfo.video.codec === 'hevc' || mediaInfo.video.codec === 'h265') {
-      recommendations.push('El códec HEVC puede tener problemas de compatibilidad, considera convertir a H.264');
-    }
-  }
-  
-  if (mediaInfo.bitrate > 10000000) {
-    recommendations.push('Se detectó un bitrate alto, se recomienda la compresión para reducir el tamaño del archivo');
-  }
-  
-  return recommendations;
-}
+// ===================== SOCKET.IO =====================
 
-// Ruta raíz
-app.get("/", (req, res) => {
-  res.json({ 
-    name: "API de Conversión de Video Avanzada",
-    version: "2.0",
-    endpoints: {
-      "POST /convert": "Upload and convert video with presets",
-      "POST /extract-audio": "Extract audio from video",
-      "POST /analyze": "Analyze media file properties",
-      "GET /presets": "Get available conversion presets",
-      "GET /job/:jobId": "Get job status",
-      "GET /job/:jobId/progress": "Real-time progress updates (SSE)",
-      "GET /download/:jobId": "Download converted file",
-      "GET /jobs": "List all active jobs",
-      "GET /health": "Health check"
-    },
-    features: [
-      "Multiple quality presets",
-      "Real-time progress tracking",
-      "Job queue management",
-      "Media analysis",
-      "Custom resolution and time range",
-      "Web-optimized output",
-      "AV1 codec support"
-    ]
-  });
-});
+io.on('connection', (socket) => {
+  logger.info(`Client connected: ${socket.id}`);
 
-// Limpieza periódica de archivos temporales y trabajos antiguos
-setInterval(async () => {
-  console.log('Running periodic cleanup...');
-  
-  const dirs = [uploadsDir, outputsDir, tempDir];
-  const maxAge = 3600000 * 3; // 3 hours
-  
-  for (const dir of dirs) {
+  socket.on('subscribe', async (jobId) => {
     try {
-      const files = await fs.readdir(dir);
-      
-      for (const file of files) {
-        const filePath = path.join(dir, file);
-        const stats = await fs.stat(filePath);
-        
-        if (Date.now() - stats.mtimeMs > maxAge) {
-          await fs.unlink(filePath);
-          console.log(`Cleaned up old file: ${file}`);
+      socket.join(jobId);
+      logger.info(`Client ${socket.id} subscribed to job ${jobId}`);
+
+      // Enviar estado actual del job inmediatamente
+      const job = jobManager.getJob(jobId);
+      if (job) {
+        socket.emit('job:update', {
+          id: job.id,
+          jobId: job.id,
+          ...job
+        });
+      } else {
+        // Intentar obtener de Redis si no está en jobManager
+        const jobData = await redis.hgetall(`job:${jobId}`);
+        if (jobData && Object.keys(jobData).length > 0) {
+          socket.emit('job:update', {
+            id: jobId,
+            jobId: jobId,
+            status: jobData.status,
+            progress: Number.parseInt(jobData.progress || 0),
+            currentTime: jobData.currentTime,
+            fps: Number.parseFloat(jobData.fps || 0),
+            speed: jobData.speed,
+            error: jobData.error,
+            result: jobData.result ? JSON.parse(jobData.result) : null
+          });
         }
       }
     } catch (error) {
-      console.error(`Error cleaning ${dir}:`, error);
+      logger.error(`Error subscribing to job ${jobId}:`, error);
     }
-  }
-
-  // Limpiar trabajos completados
-  for (const [jobId, job] of activeJobs.entries()) {
-    if (job.status === 'completed' && Date.now() - job.endTime > maxAge) {
-      activeJobs.delete(jobId);
-      console.log(`Removed old job: ${jobId}`);
-    }
-  }
-}, 3600000);
-
-const PORT = process.env.PORT || 3000;
-
-const server = app.listen(PORT, () => {
-  console.log(`
-    🎬 Conversor de Video API
-    ================================
-    Servidor en ejecución en http://localhost:${PORT}
-
-    Inicio Rápido:
-    - Subir video: POST http://localhost:${PORT}/convert
-    - Revisar presets: GET http://localhost:${PORT}/presets
-    - Ver documentación de la API: GET http://localhost:${PORT}
-
-    ¡Listo para procesar videos!
-  `);
-});
-
-// Cierres limpios
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
-
-async function shutdown() {
-  console.log('\nCerrando el servidor de forma ordenada...');
-
-  // Dejar de aceptar nuevas conexiones
-  server.close(() => {
-    console.log('Servidor HTTP cerrado');
   });
 
-  // Cancelar trabajos activos
-  for (const [jobId, job] of activeJobs.entries()) {
-    if (job.status === 'processing') {
-      job.status = 'cancelled';
-      console.log(`Trabajo cancelado: ${jobId}`);
+  socket.on('unsubscribe', (jobId) => {
+    socket.leave(jobId);
+    logger.info(`Client ${socket.id} unsubscribed from job ${jobId}`);
+  });
+
+  socket.on('disconnect', () => {
+    logger.info(`Client disconnected: ${socket.id}`);
+  });
+});
+
+// ===================== LIMPIEZA =====================
+
+const cleanup = async () => {
+  try {
+    const now = Date.now();
+    logger.info('Starting cleanup process...');
+
+    const tempCleaned = await cleanupTempFiles(now);
+    const orphansCleaned = await cleanupOrphanFiles(now);
+    const jobsCleaned = await cleanupOldJobs(now);
+
+    if (tempCleaned > 0) logger.info(`Cleaned ${tempCleaned} temp files`);
+    if (orphansCleaned > 0) logger.info(`Cleaned ${orphansCleaned} orphan files`);
+    if (jobsCleaned > 0) logger.info(`Cleaned ${jobsCleaned} old jobs`);
+
+    logger.info('Cleanup process completed');
+  } catch (error) {
+    logger.error('Cleanup error:', error);
+  }
+};
+
+async function cleanupTempFiles(now) {
+  const tempFiles = await fs.readdir(dirs.temp);
+  let cleaned = 0;
+
+  for (const file of tempFiles) {
+    try {
+      const filePath = path.join(dirs.temp, file);
+      const stats = await fs.stat(filePath);
+      if (now - stats.mtimeMs > cleanupConfig.tempFileRetention) {
+        await fs.unlink(filePath);
+        cleaned++;
+      }
+    } catch {}
+  }
+  return cleaned;
+}
+
+async function cleanupOrphanFiles(now) {
+  let cleaned = 0;
+  for (const dir of [dirs.uploads, dirs.outputs]) {
+    const files = await fs.readdir(dir);
+    for (const file of files) {
+      try {
+        const filePath = path.join(dir, file);
+        const stats = await fs.stat(filePath);
+        if (now - stats.mtimeMs > 3600000) {
+          const hasJob = Array.from(jobManager.jobs.values()).some(
+            job => job.inputPath === filePath || job.outputPath === filePath
+          );
+          if (!hasJob) {
+            await fs.unlink(filePath);
+            cleaned++;
+          }
+        }
+      } catch {}
     }
+  }
+  return cleaned;
+}
+
+async function cleanupOldJobs(now) {
+  const jobs = jobManager.getAllJobs();
+  let cleaned = 0;
+
+  for (const job of jobs) {
+    const isFailedOld = job.status === 'failed' && now - job.createdAt > cleanupConfig.failedJobRetention;
+    const isCompletedOld = job.status === 'completed' && now - (job.completedAt || job.createdAt) > cleanupConfig.completedJobRetention;
+    if (!isFailedOld && !isCompletedOld) continue;
+
+    try {
+      if (job.inputPath && fsSync.existsSync(job.inputPath)) await fs.unlink(job.inputPath);
+      if (job.outputPath && fsSync.existsSync(job.outputPath)) await fs.unlink(job.outputPath);
+
+      jobManager.deleteJob(job.id);
+      await redis.del(`job:${job.id}`);
+      downloadTracker.delete(job.id);
+      cleaned++;
+    } catch (err) {
+      logger.error(`Error cleaning job ${job.id}:`, err);
+    }
+  }
+  return cleaned;
+}
+
+// Ejecutar limpieza periódica
+setInterval(cleanup, config.cleanupInterval);
+cleanup();
+
+// ===================== MANEJO DE ERRORES =====================
+
+app.use((error, req, res, next) => {
+  logger.error('Unhandled error:', error);
+
+  if (error.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: 'File size too large' });
   }
 
-  // Limpiar archivos temporales
-  try {
-    const tempFiles = await fs.readdir(tempDir);
-    for (const file of tempFiles) {
-      await fs.unlink(path.join(tempDir, file));
-    }
-    console.log('Limpiar archivos temporales');
-  } catch (error) {
-    console.error('Error durante la limpieza:', error);
+  if (error.message?.includes('Only video and audio files')) {
+    return res.status(400).json({ error: error.message });
   }
-  
+
+  res.status(500).json({
+    error: 'Internal server error',
+    details: process.env.NODE_ENV === 'development' ? error.message : undefined
+  });
+});
+
+// ===================== CIERRE LIMPIO =====================
+
+process.on('SIGTERM', async () => {
+  logger.info('SIGTERM received, starting graceful shutdown...');
+
+  server.close(() => {
+    logger.info('HTTP server closed');
+  });
+
+  await videoQueue.close();
+  await redis.quit();
+
+  logger.info('Graceful shutdown completed');
   process.exit(0);
-}
+});
+
+// ===================== INICIO DEL SERVIDOR =====================
+
+server.listen(config.port, () => {
+  logger.info(`Servidor en ejecución en el puerto ${config.port}`);
+  logger.info(`Entorno: ${process.env.NODE_ENV || 'development'}`);
+  logger.info(`Tamaño máximo de archivo: ${formatSize(config.maxFileSize)}`);
+  logger.info(`Máximo de trabajos concurrentes: ${config.maxConcurrentJobs}`);
+  logger.info(`Tipo de almacenamiento: ${config.storageType}`);
+});
+
