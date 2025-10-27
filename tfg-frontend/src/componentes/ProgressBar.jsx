@@ -106,7 +106,7 @@ const ProgressBar = ({ job, onCancel }) => {
           {isProcessing && job.fps && (
             <div className="detail-item">
               <span className="detail-label">📹 FPS:</span>
-              <span className="detail-value">{NumberparseFloat(job.fps).toFixed(2)}</span>
+              <span className="detail-value">{Number.parseFloat(job.fps).toFixed(2)}</span>
             </div>
           )}
           
