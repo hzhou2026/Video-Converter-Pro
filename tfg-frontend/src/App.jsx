@@ -18,6 +18,7 @@ function App() {
   const [presets, setPresets] = useState({});
   const [formats, setFormats] = useState([]);
   const [systemHealth, setSystemHealth] = useState(null);
+  const [downloadedJobs, setDownloadedJobs] = useState(new Set());
 
   // Cargar datos iniciales
   useEffect(() => {
@@ -108,6 +109,11 @@ function App() {
     }
   };
 
+  // Manejar descarga de job
+  const handleJobDownload = useCallback((jobId) => {
+    setDownloadedJobs(prev => new Set(prev).add(jobId));
+  }, []);
+
   // Actualizar datos manualmente
   const refreshData = async () => {
     try {
@@ -168,6 +174,8 @@ function App() {
                       key={job.id}
                       job={job}
                       onCancel={handleJobCancel}
+                      onDownload={handleJobDownload}
+                      isDownloaded={downloadedJobs.has(job.id)}
                     />
                   ))}
                 </div>
@@ -183,6 +191,8 @@ function App() {
                       key={job.id}
                       job={job}
                       onCancel={handleJobCancel}
+                      onDownload={handleJobDownload}
+                      isDownloaded={downloadedJobs.has(job.id)}
                     />
                   ))}
                 </div>

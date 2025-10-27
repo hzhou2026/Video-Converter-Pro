@@ -209,6 +209,21 @@
   transform: translateY(0);
 }
 
+.btn-download:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-download.downloaded {
+  background-color: #4CAF50;
+  color: white;
+}
+
+.btn-download.downloaded:hover {
+  background-color: #4CAF50;
+  cursor: not-allowed;
+}
+
 /* Mensaje de Error */
 .progress-error {
   margin-top: 12px;

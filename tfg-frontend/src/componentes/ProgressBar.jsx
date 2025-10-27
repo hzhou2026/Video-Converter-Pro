@@ -1,9 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import PropTypes from 'prop-types';
 import './ProgressBar.css';
 
 // Componente ProgressBar
-const ProgressBar = ({ job, onCancel }) => {
+const ProgressBar = ({ job, onCancel, onDownload, isDownloaded }) => {
+  const [isDownloading, setIsDownloading] = useState(false);
+
   if (!job) {
     return null;
   }
@@ -54,11 +56,55 @@ const ProgressBar = ({ job, onCancel }) => {
     return texts[job.status] || 'Desconocido';
   };
 
+const handleDownload = async (e) => {
+  e.preventDefault();
+  
+  if (isDownloaded || isDownloading) {
+    return;
+  }
+
+  setIsDownloading(true);
+
+  try {
+    const response = await fetch(`http://localhost:3000/api/download/${job.id}`);
+    
+    if (!response.ok) {
+      throw new Error('Error al descargar el archivo');
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    
+    // Crear y hacer click en el enlace de manera más limpia
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = job.outputName || `video_${job.id}.mp4`;
+    link.click();
+    
+    // Limpiar después de un pequeño delay
+    setTimeout(() => URL.revokeObjectURL(url), 100);
+
+    onDownload(job.id);
+  } catch (error) {
+    console.error('Error downloading file:', error);
+    alert('Error al descargar el archivo. Es posible que ya haya sido eliminado.');
+    onDownload(job.id);
+  } finally {
+    setIsDownloading(false);
+  }
+};
+
   const progress = getProgressPercentage();
   const statusColor = getStatusColor();
   const canCancel = job.status === 'queued' || job.status === 'processing';
   const isCompleted = job.status === 'completed';
   const isProcessing = job.status === 'processing';
+
+  const getDownloadButtonText = () => {
+    if (isDownloading) return '⏳ Descargando...';
+    if (isDownloaded) return '✓ Descargado';
+    return '📥 Descargar';
+  };
 
   return (
     <div className="progress-card" data-status={job.status}>
@@ -105,7 +151,7 @@ const ProgressBar = ({ job, onCancel }) => {
         <div className="progress-details">
           {isProcessing && job.fps && (
             <div className="detail-item">
-              <span className="detail-label">📹 FPS:</span>
+              <span className="detail-label">🔹 FPS:</span>
               <span className="detail-value">{Number.parseFloat(job.fps).toFixed(2)}</span>
             </div>
           )}
@@ -138,13 +184,14 @@ const ProgressBar = ({ job, onCancel }) => {
       {/* Botón de Descarga */}
       {isCompleted && job.result && (
         <div className="progress-actions">
-          <a
-            href={`http://localhost:3000/api/download/${job.id}`}
-            className="btn-action btn-download"
-            download
+          <button
+            onClick={handleDownload}
+            className={`btn-action btn-download ${isDownloaded ? 'downloaded' : ''}`}
+            disabled={isDownloaded || isDownloading}
+            title={isDownloaded ? 'Archivo ya descargado' : 'Descargar archivo'}
           >
-            📥 Descargar
-          </a>
+            {getDownloadButtonText()}
+          </button>
         </div>
       )}
 
@@ -166,6 +213,7 @@ ProgressBar.propTypes = {
     progress: PropTypes.number,
     inputName: PropTypes.string,
     filename: PropTypes.string,
+    outputName: PropTypes.string,
     fps: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
     speed: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
     result: PropTypes.shape({
@@ -174,8 +222,9 @@ ProgressBar.propTypes = {
     }),
     error: PropTypes.string
   }).isRequired,
-  onCancel: PropTypes.func.isRequired
+  onCancel: PropTypes.func.isRequired,
+  onDownload: PropTypes.func.isRequired,
+  isDownloaded: PropTypes.bool.isRequired
 };
 
 export default ProgressBar;
-

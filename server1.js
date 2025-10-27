@@ -813,7 +813,7 @@ const formatDuration = (seconds) => {
 
 // ===================== FUNCIONES DE CONVERSIÓN =====================
 
-function buildVideoFilters({ speed, removeAudio, denoise, stabilize, crop, rotate, flip, watermark }) {
+function buildVideoFilters({ speed, removeAudio, denoise, stabilize, crop, rotate, flip }) {
   const videoFilters = [];
 
   if (speed !== 1) {
@@ -836,17 +836,7 @@ function buildVideoFilters({ speed, removeAudio, denoise, stabilize, crop, rotat
   } else if (flip === 'vertical') {
     videoFilters.push('vflip');
   }
-  if (watermark && fsSync.existsSync(watermark.path)) {
-    const position = watermark.position || 'bottomright';
-    const positions = {
-      topleft: 'x=10:y=10',
-      topright: 'x=W-w-10:y=10',
-      bottomleft: 'x=10:y=H-h-10',
-      bottomright: 'x=W-w-10:y=H-h-10',
-      center: 'x=(W-w)/2:y=(H-h)/2'
-    };
-    videoFilters.push(`movie=${watermark.path}[watermark];[in][watermark]overlay=${positions[position]}[out]`);
-  }
+
   return videoFilters;
 }
 
@@ -1271,7 +1261,6 @@ const convertVideoWithProgress = async (
     duration = null,
     removeAudio = false,
     customOptions = [],
-    watermark = null,
     subtitles = null,
     twoPass = false,
     normalizeAudio = false,
@@ -1316,7 +1305,7 @@ const convertVideoWithProgress = async (
     if (startTime !== null) command.setStartTime(startTime);
     if (duration !== null) command.setDuration(duration);
     const videoFilters = buildVideoFilters({
-      speed, removeAudio, denoise, stabilize, crop, rotate, flip, watermark,
+      speed, removeAudio, denoise, stabilize, crop, rotate, flip
     });
     if (videoFilters.length > 0) command.videoFilters(videoFilters);
     if (subtitles && fsSync.existsSync(subtitles)) {
@@ -1729,7 +1718,6 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
       startTime,
       duration,
       removeAudio,
-      watermark,
       subtitles,
       twoPass,
       normalizeAudio,
@@ -1778,7 +1766,6 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
         startTime: startTime ? Number.parseFloat(startTime) : null,
         duration: duration ? Number.parseFloat(duration) : null,
         removeAudio: removeAudio === 'true',
-        watermark,
         subtitles,
         twoPass: twoPass === 'true',
         normalizeAudio: normalizeAudio === 'true',
