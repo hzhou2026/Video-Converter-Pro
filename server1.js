@@ -1248,7 +1248,7 @@ async function cleanupAfterDownload(jobId, outputPath) {
         } catch (err) {
           logger.error(`Error in delayed cleanup for job ${jobId}:`, err);
         }
-      }, 5000); // 5 segundos de delay
+      }, 1000); // 5 segundos de delay
     }
   } catch (error) {
     logger.error(`Failed to cleanup after download for job ${jobId}:`, error);
