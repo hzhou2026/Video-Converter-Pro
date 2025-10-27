@@ -29,7 +29,7 @@ const ProgressBar = ({ job, onCancel }) => {
     const k = 1024;
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+    return `${Number.parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
   };
 
   const getStatusColor = () => {
@@ -106,7 +106,7 @@ const ProgressBar = ({ job, onCancel }) => {
           {isProcessing && job.fps && (
             <div className="detail-item">
               <span className="detail-label">📹 FPS:</span>
-              <span className="detail-value">{parseFloat(job.fps).toFixed(2)}</span>
+              <span className="detail-value">{NumberparseFloat(job.fps).toFixed(2)}</span>
             </div>
           )}
           
