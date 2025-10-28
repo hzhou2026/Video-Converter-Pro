@@ -16,7 +16,6 @@ const DEFAULT_OPTIONS = {
   startTime: '',
   duration: '',
   removeAudio: false,
-  twoPass: false,
   normalizeAudio: false,
   denoise: false,
   stabilize: false,
@@ -38,7 +37,6 @@ const FORMATS = ['mp4', 'webm', 'avi', 'mov', 'mkv'];
 
 const CHECKBOX_OPTIONS = [
   { key: 'removeAudio', label: 'Eliminar Audio' },
-  { key: 'twoPass', label: 'Codificación de Dos Pasadas' },
   { key: 'normalizeAudio', label: 'Normalizar Audio' },
   { key: 'denoise', label: 'Reducir Ruido' },
   { key: 'stabilize', label: 'Estabilizar Video' }

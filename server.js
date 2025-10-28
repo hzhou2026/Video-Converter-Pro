@@ -857,14 +857,8 @@ function applyAudioOptions(command, { removeAudio, presetConfig, normalizeAudio,
   }
 }
 
-function buildOutputOptions({ twoPass, presetConfig, jobId, customOptions }) {
+function buildOutputOptions({ presetConfig, jobId, customOptions = [] }) {
   const outputOptions = [];
-  if (twoPass && presetConfig.videoCodec === 'libx264') {
-    outputOptions.push(
-      `-pass`, `2`,
-      `-passlogfile`, path.join(dirs.temp, `pass_${jobId}`)
-    );
-  }
   if (presetConfig.crf) {
     outputOptions.push(`-crf`, `${presetConfig.crf}`);
   }
@@ -878,24 +872,6 @@ function buildOutputOptions({ twoPass, presetConfig, jobId, customOptions }) {
     outputOptions.push(...customOptions);
   }
   return outputOptions;
-}
-
-async function runTwoPass(inputPath, presetConfig, jobId) {
-  await new Promise((resolve, reject) => {
-    ffmpeg(inputPath)
-      .videoCodec('libx264')
-      .outputOptions([
-        `-pass`, `1`,
-        `-crf`, `${presetConfig.crf}`,
-        `-preset`, `${presetConfig.preset}`,
-        `-passlogfile`, path.join(dirs.temp, `pass_${jobId}`),
-        `-f`, `null`
-      ])
-      .output('/dev/null')
-      .on('end', resolve)
-      .on('error', reject)
-      .run();
-  });
 }
 
 function handleProgress(jobId, progress) {
@@ -1262,7 +1238,6 @@ const convertVideoWithProgress = async (
     removeAudio = false,
     customOptions = [],
     subtitles = null,
-    twoPass = false,
     normalizeAudio = false,
     denoise = false,
     stabilize = false,
@@ -1279,17 +1254,17 @@ const convertVideoWithProgress = async (
   } catch (error) {
     logger.error(`Job ${jobId} - Validation failed:`, error);
     const errorMessage = error.message || `Cannot process video: ${error}`;
-    
+
     await redis.hset(`job:${jobId}`, {
       status: "failed",
       error: errorMessage,
     });
-    
+
     jobManager.updateJob(jobId, {
       status: "failed",
       error: errorMessage,
     });
-    
+
     await redis.publish("job:failed", JSON.stringify({ jobId, error: errorMessage }));
     throw error;
   }
@@ -1318,13 +1293,13 @@ const convertVideoWithProgress = async (
     }
     if (presetConfig.fps) command.fps(presetConfig.fps);
     const outputOptions = buildOutputOptions({
-      twoPass, presetConfig, jobId, customOptions,
+      presetConfig, jobId, customOptions
     });
     command.outputOptions(outputOptions);
-    
+
     const aviPresets = ['raw-uncompressed', 'avi-uncompressed', 'avi-lossless',
       'avi-ffv1', 'avi-utvideo', 'avi-dv', 'avi-mjpeg'];
-    
+
     if (aviPresets.includes(preset)) {
       command.toFormat('avi');
     } else {
@@ -1333,14 +1308,6 @@ const convertVideoWithProgress = async (
   }
 
   applyCommandOptions(command);
-
-  if (twoPass && presetConfig.videoCodec === "libx264") {
-    try {
-      await runTwoPass(inputPath, presetConfig, jobId);
-    } catch (error) {
-      logger.warn(`Two-pass encoding failed, continuing with single pass:`, error.message);
-    }
-  }
 
   let progressUpdateInterval = null;
   let isCancelled = false;
@@ -1353,7 +1320,7 @@ const convertVideoWithProgress = async (
     command
       .on("progress", async (progress) => {
         if (isCancelled) return;
-        
+
         try {
           const result = handleProgressEvent({
             jobId, progress, totalDuration, lastProgress, lastLoggedProgress,
@@ -1367,18 +1334,18 @@ const convertVideoWithProgress = async (
       })
       .on("end", async () => {
         if (isCancelled) return;
-        
+
         try {
           if (progressUpdateInterval) clearInterval(progressUpdateInterval);
           activeFFmpegProcesses.delete(jobId);
-          
+
           const totalTime = Math.round((Date.now() - startTimeMs) / 1000);
           logger.info(`Job ${jobId} - Encoding completed in ${formatDuration(totalTime)}`);
-          
+
           const outputInfo = await getMediaInfo(outputPath);
           const outputStats = await fs.stat(outputPath);
           const processingTime = Date.now() - jobManager.getJob(jobId).createdAt;
-          
+
           const result = {
             success: true,
             outputPath,
@@ -1388,23 +1355,23 @@ const convertVideoWithProgress = async (
             processingTime,
             processingTimeFormatted: formatDuration(processingTime / 1000),
           };
-          
+
           await redis.hset(`job:${jobId}`, {
             status: "completed",
             progress: 100,
             result: JSON.stringify(result),
             completedAt: Date.now(),
           });
-          
+
           jobManager.updateJob(jobId, {
             status: "completed",
             progress: 100,
             result,
             completedAt: Date.now(),
           });
-          
+
           await redis.publish("job:completed", JSON.stringify({ jobId, result }));
-          
+
           io.to(jobId).emit("job:update", {
             id: jobId,
             jobId: jobId,
@@ -1412,7 +1379,7 @@ const convertVideoWithProgress = async (
             progress: 100,
             result,
           });
-          
+
           await cleanupAfterProcessing(jobId, inputPath);
           logger.info(`Job ${jobId} completed successfully in ${formatDuration(totalTime)}`);
           resolve(result);
@@ -1424,13 +1391,13 @@ const convertVideoWithProgress = async (
       .on("error", async (err) => {
         if (progressUpdateInterval) clearInterval(progressUpdateInterval);
         activeFFmpegProcesses.delete(jobId);
-        
+
         // Si fue cancelado, no tratarlo como error
         if (isCancelled) {
           logger.info(`Job ${jobId} was cancelled by user`);
           return; // No llamar reject
         }
-        
+
         try {
           await handleJobError(jobId, err, redis, jobManager, io, reject);
         } catch (error) {
@@ -1453,7 +1420,7 @@ const convertVideoWithProgress = async (
 
     progressUpdateInterval = setInterval(async () => {
       if (isCancelled) return;
-      
+
       try {
         const jobData = await redis.hgetall(`job:${jobId}`);
         if (jobData && jobData.status === "processing") {
@@ -1636,7 +1603,7 @@ app.post('/api/analyze', upload.single('media'), async (req, res) => {
   } catch (error) {
     logger.error('Analysis error:', error);
     res.status(500).json({ error: 'Failed to analyze media', details: error.message });
-    
+
     // Limpiar archivo en caso de error
     if (req.file?.path && fsSync.existsSync(req.file.path)) {
       try {
@@ -1719,7 +1686,6 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
       duration,
       removeAudio,
       subtitles,
-      twoPass,
       normalizeAudio,
       denoise,
       stabilize,
@@ -1767,7 +1733,6 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
         duration: duration ? Number.parseFloat(duration) : null,
         removeAudio: removeAudio === 'true',
         subtitles,
-        twoPass: twoPass === 'true',
         normalizeAudio: normalizeAudio === 'true',
         denoise: denoise === 'true',
         stabilize: stabilize === 'true',
@@ -1878,7 +1843,7 @@ app.delete('/api/job/:jobId', async (req, res) => {
         if (bullJob) {
           const state = await bullJob.getState();
           logger.info(`Bull job ${bullJobId} state: ${state}`);
-          
+
           // Intentar remover el job según su estado
           if (state === 'active') {
             // Si está activo, solo FFmpeg lo detendrá
@@ -1927,18 +1892,18 @@ app.delete('/api/job/:jobId', async (req, res) => {
           await fs.unlink(job.outputPath);
           logger.info(`Deleted partial output file of cancelled job: ${job.outputPath}`);
         }
-        
+
         jobManager.deleteJob(jobId);
         await redis.del(`job:${jobId}`);
         downloadTracker.delete(jobId);
-        
+
         logger.info(`Cleanup completed for cancelled job ${jobId}`);
       } catch (err) {
         logger.error(`Error cleaning cancelled job ${jobId}:`, err);
       }
     }, 2000);
 
-    res.json({ 
+    res.json({
       message: 'Job cancelled successfully',
       jobId: jobId,
       status: 'cancelled'
@@ -1946,9 +1911,9 @@ app.delete('/api/job/:jobId', async (req, res) => {
 
   } catch (error) {
     logger.error('Cancel job error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to cancel job',
-      details: error.message 
+      details: error.message
     });
   }
 });
@@ -2101,7 +2066,7 @@ async function cleanupTempFiles(now) {
         await fs.unlink(filePath);
         cleaned++;
       }
-    } catch {}
+    } catch { }
   }
   return cleaned;
 }
@@ -2123,7 +2088,7 @@ async function cleanupOrphanFiles(now) {
             cleaned++;
           }
         }
-      } catch {}
+      } catch { }
     }
   }
   return cleaned;
