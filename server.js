@@ -813,47 +813,162 @@ const formatDuration = (seconds) => {
 
 // ===================== FUNCIONES DE CONVERSIÓN =====================
 
-function buildVideoFilters({ speed, removeAudio, denoise, stabilize, crop, rotate, flip }) {
-  const videoFilters = [];
-
-  if (speed !== 1) {
-    videoFilters.push(`setpts=${1 / speed}*PTS`);
-  }
-  if (denoise) {
-    videoFilters.push('hqdn3d=4:3:6:4.5');
-  }
-  if (stabilize) {
-    videoFilters.push('deshake');
-  }
-  if (crop) {
-    videoFilters.push(`crop=${crop}`);
-  }
-  if (rotate) {
-    videoFilters.push(`rotate=${rotate}*PI/180`);
-  }
-  if (flip === 'horizontal') {
-    videoFilters.push('hflip');
-  } else if (flip === 'vertical') {
-    videoFilters.push('vflip');
-  }
-
+function buildVideoFilters({ speed, denoise, stabilize, crop, rotate, flip, subtitles }) {
+  const videoFilters = [
+    ...getDenoiseFilter(denoise),
+    ...getStabilizeFilter(stabilize),
+    ...getCropFilter(crop),
+    ...getRotateFilter(rotate),
+    ...getFlipFilter(flip),
+    ...getSpeedFilter(speed),
+    ...getSubtitlesFilter(subtitles)
+  ];
   return videoFilters;
+}
+
+function getDenoiseFilter(denoise) {
+  return denoise ? ['hqdn3d=4:3:6:4.5'] : [];
+}
+
+function getStabilizeFilter(stabilize) {
+  return stabilize ? ['deshake'] : [];
+}
+
+function getCropFilter(crop) {
+  if (!crop) return [];
+  if (/^\d+:\d+:\d+:\d+$/.test(crop)) {
+    return [`crop=${crop}`];
+  } else {
+    logger.warn(`Invalid crop format: ${crop}, skipping`);
+    return [];
+  }
+}
+
+function getRotateFilter(rotate) {
+  if (!rotate || rotate === 0) return [];
+  const normalizedRotate = ((rotate % 360) + 360) % 360;
+  if (normalizedRotate === 90) {
+    return ['transpose=1'];
+  } else if (normalizedRotate === 180) {
+    return ['transpose=1,transpose=1'];
+  } else if (normalizedRotate === 270) {
+    return ['transpose=2'];
+  } else {
+    const radians = (normalizedRotate * Math.PI / 180).toFixed(4);
+    return [`rotate=${radians}:fillcolor=black:ow='hypot(iw,ih)':oh=ow`];
+  }
+}
+
+function getFlipFilter(flip) {
+  if (flip === 'horizontal') {
+    return ['hflip'];
+  } else if (flip === 'vertical') {
+    return ['vflip'];
+  } else if (flip === 'both') {
+    return ['hflip,vflip'];
+  }
+  return [];
+}
+
+function getSpeedFilter(speed) {
+  if (speed && speed !== 1 && speed !== '1') {
+    const speedNum = Number.parseFloat(speed);
+    if (!Number.isNaN(speedNum) && speedNum > 0) {
+      return [`setpts=${(1 / speedNum).toFixed(4)}*PTS`];
+    }
+  }
+  return [];
+}
+
+function getSubtitlesFilter(subtitles) {
+  if (subtitles && fsSync.existsSync(subtitles)) {
+    // Use String.raw to avoid manual escaping of backslashes and colons
+    const filterArg = String.raw`subtitles='${subtitles}'`;
+    return [filterArg];
+  }
+  return [];
+}
+
+function buildAudioFilters({ normalizeAudio, speed }) {
+  const audioFilters = [];
+
+  // Normalización de audio (aplicar primero)
+  if (normalizeAudio) {
+    audioFilters.push('loudnorm=I=-16:TP=-1.5:LRA=11');
+  }
+
+  // Velocidad para audio (debe coincidir con la velocidad del video)
+  if (speed && speed !== 1 && speed !== '1') {
+    const speedNum = Number.parseFloat(speed);
+    if (!Number.isNaN(speedNum) && speedNum > 0) {
+      const atempoFilters = buildAtempoFilter(speedNum);
+      audioFilters.push(...atempoFilters);
+    }
+  }
+
+  return audioFilters;
+}
+
+function buildAtempoFilter(speed) {
+  const filters = [];
+  let remainingSpeed = speed;
+
+  // Validación
+  if (speed <= 0) {
+    logger.warn(`Invalid speed ${speed}, defaulting to 1.0`);
+    return [];
+  }
+
+  // Dividir en múltiples filtros atempo si es necesario
+  if (speed < 0.5) {
+    while (remainingSpeed < 0.5) {
+      filters.push('atempo=0.5');
+      remainingSpeed *= 2;
+    }
+    if (remainingSpeed > 0.5 && remainingSpeed < 1) {
+      filters.push(`atempo=${remainingSpeed.toFixed(4)}`);
+    }
+  } else if (speed > 2) {
+    while (remainingSpeed > 2) {
+      filters.push('atempo=2.0');
+      remainingSpeed /= 2;
+    }
+    if (remainingSpeed > 1 && remainingSpeed <= 2) {
+      filters.push(`atempo=${remainingSpeed.toFixed(4)}`);
+    }
+  } else if (speed !== 1) {
+    filters.push(`atempo=${speed.toFixed(4)}`);
+  }
+
+  return filters;
 }
 
 function applyAudioOptions(command, { removeAudio, presetConfig, normalizeAudio, speed }) {
   if (removeAudio) {
     command.noAudio();
-  } else if (presetConfig.audioCodec) {
-    command.audioCodec(presetConfig.audioCodec);
-    if (presetConfig.audioBitrate) {
-      command.audioBitrate(presetConfig.audioBitrate);
-    }
-    if (normalizeAudio) {
-      command.audioFilters('loudnorm=I=-16:TP=-1.5:LRA=11');
-    }
-    if (speed !== 1) {
-      command.audioFilters(`atempo=${speed}`);
-    }
+    return;
+  }
+
+  if (!presetConfig.audioCodec) {
+    // Si no hay codec de audio definido, copiar el stream original
+    command.audioCodec('copy');
+    return;
+  }
+
+  // Aplicar codec y bitrate
+  command.audioCodec(presetConfig.audioCodec);
+
+  if (presetConfig.audioBitrate) {
+    command.audioBitrate(presetConfig.audioBitrate);
+  }
+
+  // Construir y aplicar filtros de audio
+  const audioFilters = buildAudioFilters({ normalizeAudio, speed });
+
+  if (audioFilters.length > 0) {
+    const filterString = audioFilters.join(',');
+    command.audioFilters(filterString);
+    logger.info(`Applied audio filters: ${filterString}`);
   }
 }
 
@@ -872,6 +987,110 @@ function buildOutputOptions({ presetConfig, jobId, customOptions = [] }) {
     outputOptions.push(...customOptions);
   }
   return outputOptions;
+}
+
+// Aplicar opciones al comando
+function applyCommandOptions(command, options, presetConfig, preset, format) {
+  const {
+    startTime,
+    duration,
+    resolution,
+    speed = 1,
+    removeAudio = false,
+    denoise = false,
+    stabilize = false,
+    crop = null,
+    rotate = null,
+    flip = null,
+    subtitles = null,
+    normalizeAudio = false,
+    customOptions = []
+  } = options;
+
+  // Punto de inicio y duración (aplicar primero para recortar el input)
+  if (startTime !== null && startTime !== undefined && startTime > 0) {
+    command.setStartTime(Number.parseFloat(startTime));
+  }
+
+  if (duration !== null && duration !== undefined && duration > 0) {
+    command.setDuration(Number.parseFloat(duration));
+  }
+
+  // Construir y aplicar TODOS los filtros de video de una sola vez
+  const videoFilters = buildVideoFilters({
+    speed,
+    denoise,
+    stabilize,
+    crop,
+    rotate,
+    flip,
+    subtitles
+  });
+
+  if (videoFilters.length > 0) {
+    const filterString = videoFilters.join(',');
+    command.videoFilters(filterString);
+    logger.info(`Applied video filters: ${filterString}`);
+  }
+
+  // Codec de video
+  if (presetConfig.videoCodec) {
+    command.videoCodec(presetConfig.videoCodec);
+  }
+
+  // Resolución (aplicar después de los filtros)
+  if (resolution || presetConfig.resolution) {
+    const targetResolution = resolution || presetConfig.resolution;
+    command.size(targetResolution);
+    logger.info(`Applied resolution: ${targetResolution}`);
+  }
+
+  // FPS
+  if (presetConfig.fps) {
+    command.fps(presetConfig.fps);
+  }
+
+  // Aplicar opciones de audio (incluye filtros de audio)
+  applyAudioOptions(command, {
+    removeAudio,
+    presetConfig,
+    normalizeAudio,
+    speed
+  });
+
+  // Opciones de salida (CRF, preset, etc.)
+  const outputOptions = buildOutputOptions({
+    presetConfig,
+    customOptions
+  });
+
+  if (outputOptions.length > 0) {
+    command.outputOptions(outputOptions);
+  }
+
+  // Formato de salida
+  const aviPresets = [
+    'raw-uncompressed',
+    'avi-uncompressed',
+    'avi-uncompressed-rgb',
+    'avi-lossless',
+    'avi-ffv1',
+    'avi-utvideo',
+    'avi-dv',
+    'avi-dv-ntsc',
+    'avi-mjpeg',
+    'avi-mjpeg-high'
+  ];
+
+  if (aviPresets.includes(preset)) {
+    command.toFormat('avi');
+  } else if (presetConfig.outputFormat) {
+    command.toFormat(presetConfig.outputFormat);
+  } else {
+    command.toFormat(format);
+  }
+
+  return command;
 }
 
 function handleProgress(jobId, progress) {
@@ -1231,21 +1450,18 @@ const convertVideoWithProgress = async (
 ) => {
   const {
     preset = "balanced",
-    resolution = null,
     format = "mp4",
     startTime = null,
     duration = null,
-    removeAudio = false,
-    customOptions = [],
-    subtitles = null,
-    normalizeAudio = false,
-    denoise = false,
-    stabilize = false,
     speed = 1,
-    crop = null,
-    rotate = null,
-    flip = null,
   } = options;
+
+  if (speed && speed !== 1) {
+    const speedNum = Number.parseFloat(speed);
+    if (Number.isNaN(speedNum) || speedNum <= 0 || speedNum < 0.25 || speedNum > 4) {
+      throw new Error('Speed must be between 0.25x and 4.0x');
+    }
+  }
 
   let totalDuration;
   try {
@@ -1275,39 +1491,7 @@ const convertVideoWithProgress = async (
   // Guardar referencia del comando FFmpeg
   activeFFmpegProcesses.set(jobId, command);
 
-  // Aplicar opciones al comando
-  function applyCommandOptions(command) {
-    if (startTime !== null) command.setStartTime(startTime);
-    if (duration !== null) command.setDuration(duration);
-    const videoFilters = buildVideoFilters({
-      speed, removeAudio, denoise, stabilize, crop, rotate, flip
-    });
-    if (videoFilters.length > 0) command.videoFilters(videoFilters);
-    if (subtitles && fsSync.existsSync(subtitles)) {
-      command.outputOptions(["-vf", `subtitles=${subtitles}`]);
-    }
-    if (presetConfig.videoCodec) command.videoCodec(presetConfig.videoCodec);
-    applyAudioOptions(command, { removeAudio, presetConfig, normalizeAudio, speed });
-    if (resolution || presetConfig.resolution) {
-      command.size(resolution || presetConfig.resolution);
-    }
-    if (presetConfig.fps) command.fps(presetConfig.fps);
-    const outputOptions = buildOutputOptions({
-      presetConfig, jobId, customOptions
-    });
-    command.outputOptions(outputOptions);
-
-    const aviPresets = ['raw-uncompressed', 'avi-uncompressed', 'avi-lossless',
-      'avi-ffv1', 'avi-utvideo', 'avi-dv', 'avi-mjpeg'];
-
-    if (aviPresets.includes(preset)) {
-      command.toFormat('avi');
-    } else {
-      command.toFormat(format);
-    }
-  }
-
-  applyCommandOptions(command);
+  applyCommandOptions(command, options, presetConfig, preset, format);
 
   let progressUpdateInterval = null;
   let isCancelled = false;
