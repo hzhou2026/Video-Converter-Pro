@@ -241,11 +241,15 @@ videoQueue.process(config.maxConcurrentJobs, async (job) => {
   }
 });
 
+// ===================== TRACKING DE PROCESOS FFMPEG =====================
+const activeFFmpegProcesses = new Map();
+
 // ===================== GESTIÓN DE TRABAJOS =====================
 
 class JobManager {
   constructor() {
     this.jobs = new Map();
+    this.bullJobIds = new Map(); // Mapeo jobId -> Bull job ID
     this.emitter = new EventEmitter();
   }
 
@@ -264,13 +268,20 @@ class JobManager {
     return job;
   }
 
+  // Vincular job con Bull job
+  setBullJobId(jobId, bullJobId) {
+    this.bullJobIds.set(jobId, bullJobId);
+  }
+
+  getBullJobId(jobId) {
+    return this.bullJobIds.get(jobId);
+  }
+
   updateJob(jobId, updates) {
     const job = this.jobs.get(jobId);
     if (job) {
       Object.assign(job, updates);
       this.emitter.emit('job:updated', job);
-
-      // Emitir a través de Socket.IO
       io.to(jobId).emit('job:update', job);
     }
     return job;
@@ -292,6 +303,7 @@ class JobManager {
     const job = this.jobs.get(jobId);
     if (job) {
       this.jobs.delete(jobId);
+      this.bullJobIds.delete(jobId);
       this.emitter.emit('job:deleted', job);
     }
     return job;
@@ -801,68 +813,167 @@ const formatDuration = (seconds) => {
 
 // ===================== FUNCIONES DE CONVERSIÓN =====================
 
-function buildVideoFilters({ speed, removeAudio, denoise, stabilize, crop, rotate, flip, watermark }) {
-  const videoFilters = [];
-
-  if (speed !== 1) {
-    videoFilters.push(`setpts=${1 / speed}*PTS`);
-  }
-  if (denoise) {
-    videoFilters.push('hqdn3d=4:3:6:4.5');
-  }
-  if (stabilize) {
-    videoFilters.push('deshake');
-  }
-  if (crop) {
-    videoFilters.push(`crop=${crop}`);
-  }
-  if (rotate) {
-    videoFilters.push(`rotate=${rotate}*PI/180`);
-  }
-  if (flip === 'horizontal') {
-    videoFilters.push('hflip');
-  } else if (flip === 'vertical') {
-    videoFilters.push('vflip');
-  }
-  if (watermark && fsSync.existsSync(watermark.path)) {
-    const position = watermark.position || 'bottomright';
-    const positions = {
-      topleft: 'x=10:y=10',
-      topright: 'x=W-w-10:y=10',
-      bottomleft: 'x=10:y=H-h-10',
-      bottomright: 'x=W-w-10:y=H-h-10',
-      center: 'x=(W-w)/2:y=(H-h)/2'
-    };
-    videoFilters.push(`movie=${watermark.path}[watermark];[in][watermark]overlay=${positions[position]}[out]`);
-  }
+function buildVideoFilters({ speed, denoise, stabilize, crop, rotate, flip, subtitles }) {
+  const videoFilters = [
+    ...getDenoiseFilter(denoise),
+    ...getStabilizeFilter(stabilize),
+    ...getCropFilter(crop),
+    ...getRotateFilter(rotate),
+    ...getFlipFilter(flip),
+    ...getSpeedFilter(speed),
+    ...getSubtitlesFilter(subtitles)
+  ];
   return videoFilters;
+}
+
+function getDenoiseFilter(denoise) {
+  return denoise ? ['hqdn3d=4:3:6:4.5'] : [];
+}
+
+function getStabilizeFilter(stabilize) {
+  return stabilize ? ['deshake'] : [];
+}
+
+function getCropFilter(crop) {
+  if (!crop) return [];
+  if (/^\d+:\d+:\d+:\d+$/.test(crop)) {
+    return [`crop=${crop}`];
+  } else {
+    logger.warn(`Invalid crop format: ${crop}, skipping`);
+    return [];
+  }
+}
+
+function getRotateFilter(rotate) {
+  if (!rotate || rotate === 0) return [];
+  const normalizedRotate = ((rotate % 360) + 360) % 360;
+  if (normalizedRotate === 90) {
+    return ['transpose=1'];
+  } else if (normalizedRotate === 180) {
+    return ['transpose=1,transpose=1'];
+  } else if (normalizedRotate === 270) {
+    return ['transpose=2'];
+  } else {
+    const radians = (normalizedRotate * Math.PI / 180).toFixed(4);
+    return [`rotate=${radians}:fillcolor=black:ow='hypot(iw,ih)':oh=ow`];
+  }
+}
+
+function getFlipFilter(flip) {
+  if (flip === 'horizontal') {
+    return ['hflip'];
+  } else if (flip === 'vertical') {
+    return ['vflip'];
+  } else if (flip === 'both') {
+    return ['hflip,vflip'];
+  }
+  return [];
+}
+
+function getSpeedFilter(speed) {
+  if (speed && speed !== 1 && speed !== '1') {
+    const speedNum = Number.parseFloat(speed);
+    if (!Number.isNaN(speedNum) && speedNum > 0) {
+      return [`setpts=${(1 / speedNum).toFixed(4)}*PTS`];
+    }
+  }
+  return [];
+}
+
+function getSubtitlesFilter(subtitles) {
+  if (subtitles && fsSync.existsSync(subtitles)) {
+    // Use String.raw to avoid manual escaping of backslashes and colons
+    const filterArg = String.raw`subtitles='${subtitles}'`;
+    return [filterArg];
+  }
+  return [];
+}
+
+function buildAudioFilters({ normalizeAudio, speed }) {
+  const audioFilters = [];
+
+  // Normalización de audio (aplicar primero)
+  if (normalizeAudio) {
+    audioFilters.push('loudnorm=I=-16:TP=-1.5:LRA=11');
+  }
+
+  // Velocidad para audio (debe coincidir con la velocidad del video)
+  if (speed && speed !== 1 && speed !== '1') {
+    const speedNum = Number.parseFloat(speed);
+    if (!Number.isNaN(speedNum) && speedNum > 0) {
+      const atempoFilters = buildAtempoFilter(speedNum);
+      audioFilters.push(...atempoFilters);
+    }
+  }
+
+  return audioFilters;
+}
+
+function buildAtempoFilter(speed) {
+  const filters = [];
+  let remainingSpeed = speed;
+
+  // Validación
+  if (speed <= 0) {
+    logger.warn(`Invalid speed ${speed}, defaulting to 1.0`);
+    return [];
+  }
+
+  // Dividir en múltiples filtros atempo si es necesario
+  if (speed < 0.5) {
+    while (remainingSpeed < 0.5) {
+      filters.push('atempo=0.5');
+      remainingSpeed *= 2;
+    }
+    if (remainingSpeed > 0.5 && remainingSpeed < 1) {
+      filters.push(`atempo=${remainingSpeed.toFixed(4)}`);
+    }
+  } else if (speed > 2) {
+    while (remainingSpeed > 2) {
+      filters.push('atempo=2.0');
+      remainingSpeed /= 2;
+    }
+    if (remainingSpeed > 1 && remainingSpeed <= 2) {
+      filters.push(`atempo=${remainingSpeed.toFixed(4)}`);
+    }
+  } else if (speed !== 1) {
+    filters.push(`atempo=${speed.toFixed(4)}`);
+  }
+
+  return filters;
 }
 
 function applyAudioOptions(command, { removeAudio, presetConfig, normalizeAudio, speed }) {
   if (removeAudio) {
     command.noAudio();
-  } else if (presetConfig.audioCodec) {
-    command.audioCodec(presetConfig.audioCodec);
-    if (presetConfig.audioBitrate) {
-      command.audioBitrate(presetConfig.audioBitrate);
-    }
-    if (normalizeAudio) {
-      command.audioFilters('loudnorm=I=-16:TP=-1.5:LRA=11');
-    }
-    if (speed !== 1) {
-      command.audioFilters(`atempo=${speed}`);
-    }
+    return;
+  }
+
+  if (!presetConfig.audioCodec) {
+    // Si no hay codec de audio definido, copiar el stream original
+    command.audioCodec('copy');
+    return;
+  }
+
+  // Aplicar codec y bitrate
+  command.audioCodec(presetConfig.audioCodec);
+
+  if (presetConfig.audioBitrate) {
+    command.audioBitrate(presetConfig.audioBitrate);
+  }
+
+  // Construir y aplicar filtros de audio
+  const audioFilters = buildAudioFilters({ normalizeAudio, speed });
+
+  if (audioFilters.length > 0) {
+    const filterString = audioFilters.join(',');
+    command.audioFilters(filterString);
+    logger.info(`Applied audio filters: ${filterString}`);
   }
 }
 
-function buildOutputOptions({ twoPass, presetConfig, jobId, customOptions }) {
+function buildOutputOptions({ presetConfig, jobId, customOptions = [] }) {
   const outputOptions = [];
-  if (twoPass && presetConfig.videoCodec === 'libx264') {
-    outputOptions.push(
-      `-pass`, `2`,
-      `-passlogfile`, path.join(dirs.temp, `pass_${jobId}`)
-    );
-  }
   if (presetConfig.crf) {
     outputOptions.push(`-crf`, `${presetConfig.crf}`);
   }
@@ -878,22 +989,108 @@ function buildOutputOptions({ twoPass, presetConfig, jobId, customOptions }) {
   return outputOptions;
 }
 
-async function runTwoPass(inputPath, presetConfig, jobId) {
-  await new Promise((resolve, reject) => {
-    ffmpeg(inputPath)
-      .videoCodec('libx264')
-      .outputOptions([
-        `-pass`, `1`,
-        `-crf`, `${presetConfig.crf}`,
-        `-preset`, `${presetConfig.preset}`,
-        `-passlogfile`, path.join(dirs.temp, `pass_${jobId}`),
-        `-f`, `null`
-      ])
-      .output('/dev/null')
-      .on('end', resolve)
-      .on('error', reject)
-      .run();
+// Aplicar opciones al comando
+function applyCommandOptions(command, options, presetConfig, preset, format) {
+  const {
+    startTime,
+    duration,
+    resolution,
+    speed = 1,
+    removeAudio = false,
+    denoise = false,
+    stabilize = false,
+    crop = null,
+    rotate = null,
+    flip = null,
+    subtitles = null,
+    normalizeAudio = false,
+    customOptions = []
+  } = options;
+
+  // Punto de inicio y duración (aplicar primero para recortar el input)
+  if (startTime !== null && startTime !== undefined && startTime > 0) {
+    command.setStartTime(Number.parseFloat(startTime));
+  }
+
+  if (duration !== null && duration !== undefined && duration > 0) {
+    command.setDuration(Number.parseFloat(duration));
+  }
+
+  // Construir y aplicar TODOS los filtros de video de una sola vez
+  const videoFilters = buildVideoFilters({
+    speed,
+    denoise,
+    stabilize,
+    crop,
+    rotate,
+    flip,
+    subtitles
   });
+
+  if (videoFilters.length > 0) {
+    const filterString = videoFilters.join(',');
+    command.videoFilters(filterString);
+    logger.info(`Applied video filters: ${filterString}`);
+  }
+
+  // Codec de video
+  if (presetConfig.videoCodec) {
+    command.videoCodec(presetConfig.videoCodec);
+  }
+
+  // Resolución (aplicar después de los filtros)
+  if (resolution || presetConfig.resolution) {
+    const targetResolution = resolution || presetConfig.resolution;
+    command.size(targetResolution);
+    logger.info(`Applied resolution: ${targetResolution}`);
+  }
+
+  // FPS
+  if (presetConfig.fps) {
+    command.fps(presetConfig.fps);
+  }
+
+  // Aplicar opciones de audio (incluye filtros de audio)
+  applyAudioOptions(command, {
+    removeAudio,
+    presetConfig,
+    normalizeAudio,
+    speed
+  });
+
+  // Opciones de salida (CRF, preset, etc.)
+  const outputOptions = buildOutputOptions({
+    presetConfig,
+    customOptions
+  });
+
+  if (outputOptions.length > 0) {
+    command.outputOptions(outputOptions);
+  }
+
+  // Formato de salida
+  const aviPresets = [
+    'raw-uncompressed',
+    'avi-uncompressed',
+    'avi-uncompressed-rgb',
+    'avi-lossless',
+    'avi-ffv1',
+    'avi-utvideo',
+    'avi-dv',
+    'avi-dv-ntsc',
+    'avi-mjpeg',
+    'avi-mjpeg-high'
+  ];
+
+  if (aviPresets.includes(preset)) {
+    command.toFormat('avi');
+  } else if (presetConfig.outputFormat) {
+    command.toFormat(presetConfig.outputFormat);
+  } else {
+    command.toFormat(format);
+  }
+
+  return command;
 }
 
 function handleProgress(jobId, progress) {
@@ -1030,7 +1227,7 @@ const getVideoDuration = async (inputPath) => {
   }
 };
 
-// ===================== CONVERSIÓN CON PROGRESO MEJORADO =====================
+// ===================== CONVERSIÓN CON PROGRESO =====================
 
 function handleProgressEvent({
   jobId,
@@ -1236,13 +1433,14 @@ async function cleanupAfterDownload(jobId, outputPath) {
         } catch (err) {
           logger.error(`Error in delayed cleanup for job ${jobId}:`, err);
         }
-      }, 5000); // 5 segundos de delay
+      }, 1000); // 5 segundos de delay
     }
   } catch (error) {
     logger.error(`Failed to cleanup after download for job ${jobId}:`, error);
   }
 }
 
+// Función principal de conversión con progreso
 const convertVideoWithProgress = async (
   jobId,
   inputPath,
@@ -1252,23 +1450,18 @@ const convertVideoWithProgress = async (
 ) => {
   const {
     preset = "balanced",
-    resolution = null,
     format = "mp4",
     startTime = null,
     duration = null,
-    removeAudio = false,
-    customOptions = [],
-    watermark = null,
-    subtitles = null,
-    twoPass = false,
-    normalizeAudio = false,
-    denoise = false,
-    stabilize = false,
     speed = 1,
-    crop = null,
-    rotate = null,
-    flip = null,
   } = options;
+
+  if (speed && speed !== 1) {
+    const speedNum = Number.parseFloat(speed);
+    if (Number.isNaN(speedNum) || speedNum <= 0 || speedNum < 0.25 || speedNum > 4) {
+      throw new Error('Speed must be between 0.25x and 4.0x');
+    }
+  }
 
   let totalDuration;
   try {
@@ -1276,7 +1469,6 @@ const convertVideoWithProgress = async (
     await validateRawPreset(preset, totalDuration);
   } catch (error) {
     logger.error(`Job ${jobId} - Validation failed:`, error);
-
     const errorMessage = error.message || `Cannot process video: ${error}`;
 
     await redis.hset(`job:${jobId}`, {
@@ -1289,145 +1481,21 @@ const convertVideoWithProgress = async (
       error: errorMessage,
     });
 
-    await redis.publish(
-      "job:failed",
-      JSON.stringify({
-        jobId,
-        error: errorMessage,
-      })
-    );
-
+    await redis.publish("job:failed", JSON.stringify({ jobId, error: errorMessage }));
     throw error;
   }
 
   const presetConfig = PRESETS[preset] || PRESETS["balanced"];
   let command = ffmpeg(inputPath);
 
-  // Aplicar opciones al comando
-  function applyCommandOptions(command) {
-    if (startTime !== null) command.setStartTime(startTime);
-    if (duration !== null) command.setDuration(duration);
-    const videoFilters = buildVideoFilters({
-      speed,
-      removeAudio,
-      denoise,
-      stabilize,
-      crop,
-      rotate,
-      flip,
-      watermark,
-    });
-    if (videoFilters.length > 0) command.videoFilters(videoFilters);
-    if (subtitles && fsSync.existsSync(subtitles)) {
-      command.outputOptions(["-vf", `subtitles=${subtitles}`]);
-    }
-    if (presetConfig.videoCodec) command.videoCodec(presetConfig.videoCodec);
-    applyAudioOptions(command, {
-      removeAudio,
-      presetConfig,
-      normalizeAudio,
-      speed,
-    });
-    if (resolution || presetConfig.resolution) {
-      command.size(resolution || presetConfig.resolution);
-    }
-    if (presetConfig.fps) command.fps(presetConfig.fps);
-    const outputOptions = buildOutputOptions({
-      twoPass,
-      presetConfig,
-      jobId,
-      customOptions,
-    });
-    command.outputOptions(outputOptions);
-    // Asegurar formato AVI para presets raw/avi
-    const aviPresets = ['raw-uncompressed', 'avi-uncompressed', 'avi-lossless',
-      'avi-ffv1', 'avi-utvideo', 'avi-dv', 'avi-mjpeg'];
+  // Guardar referencia del comando FFmpeg
+  activeFFmpegProcesses.set(jobId, command);
 
-    if (aviPresets.includes(preset)) {
-      command.toFormat('avi');
-    } else {
-      command.toFormat(format);
-    }
-  }
-
-  applyCommandOptions(command);
-
-  if (twoPass && presetConfig.videoCodec === "libx264") {
-    try {
-      await runTwoPass(inputPath, presetConfig, jobId);
-    } catch (error) {
-      logger.warn(
-        `Two-pass encoding failed, continuing with single pass:`,
-        error.message
-      );
-    }
-  }
-
-  // Finalizar trabajo
-  async function finalizeJob({
-    jobId,
-    startTimeMs,
-    inputPath,
-    outputPath,
-    resolve,
-    totalDuration,
-  }) {
-    if (progressUpdateInterval) clearInterval(progressUpdateInterval);
-    const totalTime = Math.round((Date.now() - startTimeMs) / 1000);
-    logger.info(
-      `Job ${jobId} - Encoding completed in ${formatDuration(totalTime)}`
-    );
-    const outputInfo = await getMediaInfo(outputPath);
-    const outputStats = await fs.stat(outputPath);
-    const processingTime = Date.now() - jobManager.getJob(jobId).createdAt;
-    const result = {
-      success: true,
-      outputPath,
-      outputSize: outputStats.size,
-      outputSizeFormatted: formatSize(outputStats.size),
-      outputInfo,
-      processingTime,
-      processingTimeFormatted: formatDuration(processingTime / 1000),
-    };
-    await redis.hset(`job:${jobId}`, {
-      status: "completed",
-      progress: 100,
-      result: JSON.stringify(result),
-      completedAt: Date.now(),
-    });
-    jobManager.updateJob(jobId, {
-      status: "completed",
-      progress: 100,
-      result,
-      completedAt: Date.now(),
-    });
-    await redis.publish(
-      "job:completed",
-      JSON.stringify({
-        jobId,
-        result,
-      })
-    );
-    io.to(jobId).emit("job:update", {
-      id: jobId,
-      jobId: jobId,
-      status: "completed",
-      progress: 100,
-      result,
-    });
-    await cleanupAfterProcessing(jobId, inputPath);
-
-    logger.info(`Job ${jobId} completed successfully in ${formatDuration(totalTime)}`);
-    resolve(result);
-  }
-
-  // Manejar errores del trabajo
-  async function handleJobErrorWrapper(jobId, err, reject) {
-    if (progressUpdateInterval) clearInterval(progressUpdateInterval);
-    await handleJobError(jobId, err, redis, jobManager, io, reject);
-  }
+  applyCommandOptions(command, options, presetConfig, preset, format);
 
   let progressUpdateInterval = null;
+  let isCancelled = false;
+
   return new Promise((resolve, reject) => {
     let lastProgress = -1;
     let lastLoggedProgress = -1;
@@ -1435,17 +1503,12 @@ const convertVideoWithProgress = async (
 
     command
       .on("progress", async (progress) => {
+        if (isCancelled) return;
+
         try {
           const result = handleProgressEvent({
-            jobId,
-            progress,
-            totalDuration,
-            lastProgress,
-            lastLoggedProgress,
-            startTime: startTimeMs,
-            redis,
-            jobManager,
-            io,
+            jobId, progress, totalDuration, lastProgress, lastLoggedProgress,
+            startTime: startTimeMs, redis, jobManager, io,
           });
           lastProgress = result.lastProgress;
           lastLoggedProgress = result.lastLoggedProgress;
@@ -1454,23 +1517,73 @@ const convertVideoWithProgress = async (
         }
       })
       .on("end", async () => {
+        if (isCancelled) return;
+
         try {
-          await finalizeJob({
-            jobId,
-            startTimeMs,
-            inputPath,
+          if (progressUpdateInterval) clearInterval(progressUpdateInterval);
+          activeFFmpegProcesses.delete(jobId);
+
+          const totalTime = Math.round((Date.now() - startTimeMs) / 1000);
+          logger.info(`Job ${jobId} - Encoding completed in ${formatDuration(totalTime)}`);
+
+          const outputInfo = await getMediaInfo(outputPath);
+          const outputStats = await fs.stat(outputPath);
+          const processingTime = Date.now() - jobManager.getJob(jobId).createdAt;
+
+          const result = {
+            success: true,
             outputPath,
-            resolve,
-            totalDuration,
+            outputSize: outputStats.size,
+            outputSizeFormatted: formatSize(outputStats.size),
+            outputInfo,
+            processingTime,
+            processingTimeFormatted: formatDuration(processingTime / 1000),
+          };
+
+          await redis.hset(`job:${jobId}`, {
+            status: "completed",
+            progress: 100,
+            result: JSON.stringify(result),
+            completedAt: Date.now(),
           });
+
+          jobManager.updateJob(jobId, {
+            status: "completed",
+            progress: 100,
+            result,
+            completedAt: Date.now(),
+          });
+
+          await redis.publish("job:completed", JSON.stringify({ jobId, result }));
+
+          io.to(jobId).emit("job:update", {
+            id: jobId,
+            jobId: jobId,
+            status: "completed",
+            progress: 100,
+            result,
+          });
+
+          await cleanupAfterProcessing(jobId, inputPath);
+          logger.info(`Job ${jobId} completed successfully in ${formatDuration(totalTime)}`);
+          resolve(result);
         } catch (error) {
           logger.error(`Error finalizing job ${jobId}:`, error);
           reject(error instanceof Error ? error : new Error(String(error)));
         }
       })
       .on("error", async (err) => {
+        if (progressUpdateInterval) clearInterval(progressUpdateInterval);
+        activeFFmpegProcesses.delete(jobId);
+
+        // Si fue cancelado, no tratarlo como error
+        if (isCancelled) {
+          logger.info(`Job ${jobId} was cancelled by user`);
+          return; // No llamar reject
+        }
+
         try {
-          await handleJobErrorWrapper(jobId, err, reject);
+          await handleJobError(jobId, err, redis, jobManager, io, reject);
         } catch (error) {
           logger.error(`Error handling job ${jobId} failure:`, error);
           reject(error instanceof Error ? error : new Error(String(error)));
@@ -1478,7 +1591,20 @@ const convertVideoWithProgress = async (
       })
       .save(outputPath);
 
+    // Función para cancelar el proceso
+    command.cancel = () => {
+      isCancelled = true;
+      try {
+        command.kill('SIGKILL'); // Matar el proceso FFmpeg
+        logger.info(`FFmpeg process killed for job ${jobId}`);
+      } catch (err) {
+        logger.error(`Error killing FFmpeg for job ${jobId}:`, err);
+      }
+    };
+
     progressUpdateInterval = setInterval(async () => {
+      if (isCancelled) return;
+
       try {
         const jobData = await redis.hgetall(`job:${jobId}`);
         if (jobData && jobData.status === "processing") {
@@ -1501,10 +1627,7 @@ const convertVideoWithProgress = async (
           }
         }
       } catch (error) {
-        logger.error(
-          `Error in progress interval for job ${jobId}:`,
-          error
-        );
+        logger.error(`Error in progress interval for job ${jobId}:`, error);
       }
     }, 10000);
   });
@@ -1664,7 +1787,7 @@ app.post('/api/analyze', upload.single('media'), async (req, res) => {
   } catch (error) {
     logger.error('Analysis error:', error);
     res.status(500).json({ error: 'Failed to analyze media', details: error.message });
-    
+
     // Limpiar archivo en caso de error
     if (req.file?.path && fsSync.existsSync(req.file.path)) {
       try {
@@ -1746,9 +1869,7 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
       startTime,
       duration,
       removeAudio,
-      watermark,
       subtitles,
-      twoPass,
       normalizeAudio,
       denoise,
       stabilize,
@@ -1763,7 +1884,6 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
     const outputFilename = `${path.parse(req.file.filename).name}_converted.${format}`;
     const outputPath = path.join(dirs.outputs, outputFilename);
 
-    // Crear job
     const job = jobManager.createJob({
       type: 'conversion',
       inputPath,
@@ -1776,7 +1896,6 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
 
     logger.info(`Job created: ${job.id} for file: ${req.file.originalname}`);
 
-    // Guardar en Redis
     await redis.hset(`job:${job.id}`, {
       status: 'queued',
       progress: 0,
@@ -1785,8 +1904,8 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
       createdAt: Date.now()
     });
 
-    // Agregar job a la cola de procesamiento
-    await videoQueue.add({
+    // Agregar job a la cola y GUARDAR el Bull job ID
+    const bullJob = await videoQueue.add({
       jobId: job.id,
       inputPath,
       outputPath,
@@ -1797,9 +1916,7 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
         startTime: startTime ? Number.parseFloat(startTime) : null,
         duration: duration ? Number.parseFloat(duration) : null,
         removeAudio: removeAudio === 'true',
-        watermark,
         subtitles,
-        twoPass: twoPass === 'true',
         normalizeAudio: normalizeAudio === 'true',
         denoise: denoise === 'true',
         stabilize: stabilize === 'true',
@@ -1810,6 +1927,9 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
         customOptions: Array.isArray(customOptions) ? customOptions : []
       }
     });
+
+    // Vincular el job ID con el Bull job ID
+    jobManager.setBullJobId(job.id, bullJob.id);
 
     res.json({
       jobId: job.id,
@@ -1889,41 +2009,96 @@ app.delete('/api/job/:jobId', async (req, res) => {
   }
 
   try {
-    const bullJob = await videoQueue.getJob(jobId);
-    if (bullJob) {
-      await bullJob.remove();
+    logger.info(`Attempting to cancel job ${jobId} (status: ${job.status})`);
+
+    // Detener el proceso FFmpeg si está activo
+    const ffmpegCommand = activeFFmpegProcesses.get(jobId);
+    if (ffmpegCommand && typeof ffmpegCommand.cancel === 'function') {
+      logger.info(`Killing FFmpeg process for job ${jobId}`);
+      ffmpegCommand.cancel();
+      activeFFmpegProcesses.delete(jobId);
     }
+
+    // Cancelar el job en Bull queue
+    const bullJobId = jobManager.getBullJobId(jobId);
+    if (bullJobId) {
+      try {
+        const bullJob = await videoQueue.getJob(bullJobId);
+        if (bullJob) {
+          const state = await bullJob.getState();
+          logger.info(`Bull job ${bullJobId} state: ${state}`);
+
+          // Intentar remover el job según su estado
+          if (state === 'active') {
+            // Si está activo, solo FFmpeg lo detendrá
+            await bullJob.remove();
+            logger.info(`Removed active Bull job ${bullJobId}`);
+          } else if (state === 'waiting' || state === 'delayed') {
+            await bullJob.remove();
+            logger.info(`Removed waiting/delayed Bull job ${bullJobId}`);
+          }
+        }
+      } catch (bullError) {
+        logger.warn(`Could not remove Bull job ${bullJobId}:`, bullError.message);
+      }
+    }
+
+    // Actualizar estado en Redis y jobManager
+    await redis.hset(`job:${jobId}`, {
+      status: 'cancelled',
+      cancelledAt: Date.now(),
+      progress: 0
+    });
 
     jobManager.updateJob(jobId, {
       status: 'cancelled',
+      cancelledAt: Date.now(),
+      progress: 0
+    });
+
+    // Notificar a través de Socket.IO
+    io.to(jobId).emit('job:update', {
+      id: jobId,
+      jobId: jobId,
+      status: 'cancelled',
+      progress: 0,
       cancelledAt: Date.now()
     });
 
-    // Eliminar archivos del job cancelado
+    // Programar limpieza de archivos
     setTimeout(async () => {
       try {
         if (job.inputPath && fsSync.existsSync(job.inputPath)) {
           await fs.unlink(job.inputPath);
-          logger.info(`✓ Deleted input file of cancelled job: ${job.inputPath}`);
+          logger.info(`Deleted input file of cancelled job: ${job.inputPath}`);
         }
         if (job.outputPath && fsSync.existsSync(job.outputPath)) {
           await fs.unlink(job.outputPath);
-          logger.info(`✓ Deleted output file of cancelled job: ${job.outputPath}`);
+          logger.info(`Deleted partial output file of cancelled job: ${job.outputPath}`);
         }
-        
-        // Limpiar job
+
         jobManager.deleteJob(jobId);
         await redis.del(`job:${jobId}`);
         downloadTracker.delete(jobId);
+
+        logger.info(`Cleanup completed for cancelled job ${jobId}`);
       } catch (err) {
         logger.error(`Error cleaning cancelled job ${jobId}:`, err);
       }
-    }, 2000); // 2 segundos de delay
+    }, 2000);
 
-    res.json({ message: 'Job cancelled successfully' });
+    res.json({
+      message: 'Job cancelled successfully',
+      jobId: jobId,
+      status: 'cancelled'
+    });
+
   } catch (error) {
     logger.error('Cancel job error:', error);
-    res.status(500).json({ error: 'Failed to cancel job' });
+    res.status(500).json({
+      error: 'Failed to cancel job',
+      details: error.message
+    });
   }
 });
 
@@ -1989,46 +2164,6 @@ app.get('/api/stream/:jobId', async (req, res) => {
     };
     res.writeHead(200, head);
     fsSync.createReadStream(videoPath).pipe(res);
-  }
-});
-
-// Comparar videos
-app.post('/api/compare', async (req, res) => {
-  try {
-    const { originalJobId, convertedJobId } = req.body;
-
-    const originalJob = jobManager.getJob(originalJobId);
-    const convertedJob = jobManager.getJob(convertedJobId);
-
-    if (!originalJob || !convertedJob) {
-      return res.status(404).json({ error: 'Jobs not found' });
-    }
-
-    const originalInfo = await getMediaInfo(originalJob.inputPath || originalJob.outputPath);
-    const convertedInfo = await getMediaInfo(convertedJob.outputPath);
-
-    const originalStats = await fs.stat(originalJob.inputPath || originalJob.outputPath);
-    const convertedStats = await fs.stat(convertedJob.outputPath);
-
-    res.json({
-      original: {
-        info: originalInfo,
-        size: originalStats.size,
-        sizeFormatted: formatSize(originalStats.size)
-      },
-      converted: {
-        info: convertedInfo,
-        size: convertedStats.size,
-        sizeFormatted: formatSize(convertedStats.size)
-      },
-      comparison: {
-        sizeReduction: ((1 - convertedStats.size / originalStats.size) * 100).toFixed(2) + '%',
-      }
-    });
-
-  } catch (error) {
-    logger.error('Comparison error:', error);
-    res.status(500).json({ error: 'Failed to compare videos' });
   }
 });
 
@@ -2115,7 +2250,7 @@ async function cleanupTempFiles(now) {
         await fs.unlink(filePath);
         cleaned++;
       }
-    } catch {}
+    } catch { }
   }
   return cleaned;
 }
@@ -2137,7 +2272,7 @@ async function cleanupOrphanFiles(now) {
             cleaned++;
           }
         }
-      } catch {}
+      } catch { }
     }
   }
   return cleaned;
