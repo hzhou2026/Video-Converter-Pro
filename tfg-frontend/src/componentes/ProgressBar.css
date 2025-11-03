@@ -74,7 +74,7 @@
 }
 
 .btn-cancel {
-  background: #f44336;
+  background: #d32f2f;
   color: white;
   border: none;
   border-radius: 50%;
@@ -91,7 +91,7 @@
 }
 
 .btn-cancel:hover {
-  background: #d32f2f;
+  background: #c62828;
   transform: scale(1.1);
 }
 
@@ -195,7 +195,7 @@
 }
 
 .btn-download {
-  background: #4CAF50;
+  background: #2e7d32;
   color: white;
 }
 
@@ -215,7 +215,7 @@
 }
 
 .btn-download.downloaded {
-  background-color: #4CAF50;
+  background-color: #2e7d32;
   color: white;
 }
 

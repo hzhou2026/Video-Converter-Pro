@@ -27,7 +27,7 @@ body {
 /* ENCABEZADO */
 
 .app-header {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #5562d6 0%, #6a3f93 100%);
   color: white;
   padding: 24px 32px;
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
@@ -138,13 +138,13 @@ body {
 }
 
 .nav-tab:hover {
-  color: #667eea;
+  color: #4c5ec4;
   background: #f8f9ff;
 }
 
 .nav-tab.active {
-  color: #667eea;
-  border-bottom-color: #667eea;
+  color: #4c5ec4; 
+  border-bottom-color: #4c5ec4;
   background: #f8f9ff;
 }
 
@@ -155,7 +155,7 @@ body {
   left: 0;
   right: 0;
   height: 3px;
-  background: #667eea;
+  background: #4c5ec4; 
   border-radius: 3px 3px 0 0;
 }
 
@@ -229,7 +229,7 @@ body {
 }
 
 .drop-zone:hover {
-  border-color: #667eea;
+  border-color: #5562d6;
   background: #f8f9ff;
 }
 
@@ -238,11 +238,12 @@ body {
 }
 
 .drop-zone.drag-over {
-  border-color: #667eea;
+  border-color: #5562d6;
   background: #e8eeff;
   transform: scale(1.01);
-  box-shadow: 0 4px 20px rgba(102, 126, 234, 0.2);
+  box-shadow: 0 4px 20px rgba(85, 98, 214, 0.2);
 }
+
 
 .drop-zone.drag-over::before {
   opacity: 1;
@@ -379,13 +380,14 @@ body {
 
 .suggestion-type {
   font-weight: 700;
-  color: #ff8c00;
+  color: #993d00;
   text-transform: uppercase;
   font-size: 11px;
   letter-spacing: 0.5px;
-  background: rgba(255, 140, 0, 0.1);
+  background: #fff3e0; 
   padding: 2px 8px;
   border-radius: 4px;
+  border: 1px solid #ffe0b2; 
 }
 
 .suggestion-message {
@@ -396,21 +398,21 @@ body {
 
 .btn-apply-suggestion {
   padding: 6px 14px;
-  background: #ffa500;
+  background: #996000;
   color: white;
   border: none;
   border-radius: 4px;
   cursor: pointer;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
   transition: all 0.2s;
   white-space: nowrap;
 }
 
 .btn-apply-suggestion:hover {
-  background: #ff8c00;
+  background: #805000;
   transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(255, 165, 0, 0.3);
+  box-shadow: 0 2px 8px rgba(153, 96, 0, 0.3);
 }
 
 .btn-apply-suggestion:active {
@@ -621,12 +623,13 @@ body {
 
 .btn-convert {
   flex: 1;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #5562d6 0%, #6a3f93 100%); 
   color: white;
   box-shadow: 0 4px 12px rgba(102, 126, 234, 0.25);
 }
 
 .btn-convert:hover:not(:disabled) {
+  background: linear-gradient(135deg, #4a54c1 0%, #5e3683 100%);
   transform: translateY(-2px);
   box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
 }
@@ -684,7 +687,7 @@ body {
 
 .btn-refresh {
   padding: 10px 20px;
-  background: #667eea;
+  background: #5562d6;
   color: white;
   border: none;
   border-radius: 6px;
@@ -1004,9 +1007,9 @@ body {
 .warning-message {
   padding: 12px 16px;
   background: #fff8e1;
-  border-left: 4px solid #ffa500;
+  border-left: 4px solid #b87200;
   border-radius: 6px;
-  color: #f57c00;
+  color: #b35000;
   font-size: 14px;
   margin: 12px 0;
   display: flex;
