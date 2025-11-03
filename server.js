@@ -1607,7 +1607,7 @@ const convertVideoWithProgress = async (
 
       try {
         const jobData = await redis.hgetall(`job:${jobId}`);
-        if (jobData && jobData.status === "processing") {
+        if (jobData?.status === "processing") {
           const lastUpdate = Number.parseInt(jobData.updatedAt || 0);
           const now = Date.now();
 
@@ -2134,7 +2134,7 @@ app.get('/api/download/:jobId', async (req, res) => {
 app.get('/api/stream/:jobId', async (req, res) => {
   const job = jobManager.getJob(req.params.jobId);
 
-  if (!job || job.status !== 'completed') {
+  if (job?.status !== 'completed') {
     return res.status(404).json({ error: 'Video not available' });
   }
 
