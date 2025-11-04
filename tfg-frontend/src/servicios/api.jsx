@@ -1,4 +1,3 @@
-// servicios/api.js
 const BASE_URL = 'http://localhost:3000';
 
 const handleResponse = async (response) => {
@@ -36,7 +35,6 @@ export const api = {
   
   fetchJob: (jobId) => request(`/api/job/${jobId}`),
   
-  // CORREGIDO: Cambiar /api/upload a /api/convert
   createJob: async (formData) => {
     try {
       console.log('📤 Sending conversion request...');
