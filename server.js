@@ -1823,10 +1823,10 @@ const suggestOptimalSettings = (info) => {
     }
 
     // Sugerencias de FPS
-    if (info.video.fps > 30) {
+    if (info.video.fps > 60) {
       suggestions.push({
         type: 'fps',
-        message: `Se ha detectado una alta tasa de fotogramas (${info.video.fps}fps). Considerar 30/60fps para reducir el tamaño del archivo.`,
+        message: `Se ha detectado una alta tasa de fotogramas (${info.video.fps}fps). Considerar 60fps para reducir el tamaño del archivo.`,
         option: { fps: 30 }
       });
     }
