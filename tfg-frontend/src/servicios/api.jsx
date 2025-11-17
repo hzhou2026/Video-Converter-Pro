@@ -1,4 +1,4 @@
-const BASE_URL = 'http://localhost:3000';
+const BASE_URL = `${globalThis.location.protocol}//${globalThis.location.hostname}:3000`;
 
 const handleResponse = async (response) => {
   if (!response.ok) {
