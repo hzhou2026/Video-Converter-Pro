@@ -39,3 +39,6 @@ coverage/
 cache/
 *.tmp
 thumbnails/
+
+# --- Pruebas ---
+video_prueba.mp4
