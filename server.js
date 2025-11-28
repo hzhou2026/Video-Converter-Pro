@@ -1855,7 +1855,7 @@ const suggestOptimalSettings = (info) => {
   return suggestions;
 };
 
-// Conversión de video/audio
+// Conversión de video
 app.post('/api/convert', upload.single('video'), async (req, res) => {
   try {
     if (!req.file) {
@@ -1931,7 +1931,7 @@ app.post('/api/convert', upload.single('video'), async (req, res) => {
     // Vincular el job ID con el Bull job ID
     jobManager.setBullJobId(job.id, bullJob.id);
 
-    res.json({
+    res.status(201).json({
       jobId: job.id,
       status: 'queued',
       inputName: req.file.originalname,
@@ -2111,7 +2111,7 @@ app.get('/api/download/:jobId', async (req, res) => {
   }
 
   if (job.status !== 'completed') {
-    return res.status(400).json({ error: 'Job not completed yet' });
+    return res.status(409).json({ error: 'Job not completed yet' });
   }
 
   if (!fsSync.existsSync(job.outputPath)) {
