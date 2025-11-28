@@ -1855,8 +1855,8 @@ const suggestOptimalSettings = (info) => {
   return suggestions;
 };
 
-// Conversión de video
-app.post('/api/convert', upload.single('video'), async (req, res) => {
+// Conversión de video/audio
+app.post('/api/convert', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });

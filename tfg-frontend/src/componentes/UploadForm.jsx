@@ -148,7 +148,7 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
     setUploadError(null);
 
     const formData = new FormData();
-    formData.append('video', selectedFile);
+    formData.append('file', selectedFile);
     formData.append('preset', selectedPreset);
     
     for (const [key, value] of Object.entries(customOptions)) {
