@@ -382,6 +382,36 @@ const PRESETS = {
     allowCustomOptions: true
   },
 
+  'webm-balanced': {
+    videoCodec: 'libvpx-vp9',
+    audioCodec: 'libopus',
+    crf: 31,
+    preset: 'good',
+    audioBitrate: '128k',
+    outputFormat: 'webm',
+    description: 'WebM con VP9 y Opus (calidad balanceada)',
+    extraOptions: [
+      '-b:v', '0',
+      '-tile-columns', '2',
+      '-threads', '4',
+      '-row-mt', '1'
+    ],
+    allowCustomOptions: true
+  },
+  'webm-fast': {
+    videoCodec: 'libvpx',
+    audioCodec: 'libvorbis',
+    audioBitrate: '128k',
+    outputFormat: 'webm',
+    description: 'WebM con VP8 (conversión rápida)',
+    extraOptions: [
+      '-b:v', '1M',
+      '-quality', 'good',
+      '-cpu-used', '2'
+    ],
+    allowCustomOptions: true
+  },
+
   // Presets para redes sociales
   'youtube-4k': {
     videoCodec: 'libx264',
@@ -1086,6 +1116,25 @@ function applyCommandOptions(command, options, presetConfig, preset, format) {
     command.toFormat('avi');
   } else if (presetConfig.outputFormat) {
     command.toFormat(presetConfig.outputFormat);
+  } else if (format === 'webm') {
+
+    command.toFormat('webm');
+
+    if (!presetConfig.videoCodec ||
+      (presetConfig.videoCodec !== 'libvpx' &&
+        presetConfig.videoCodec !== 'libvpx-vp9')) {
+      command.videoCodec('libvpx-vp9');
+      command.outputOptions([
+        '-crf', '31',
+        '-b:v', '0'
+      ]);
+    }
+
+    if (!presetConfig.audioCodec ||
+      (presetConfig.audioCodec !== 'libopus' &&
+        presetConfig.audioCodec !== 'libvorbis')) {
+      command.audioCodec('libopus');
+    }
   } else {
     command.toFormat(format);
   }
