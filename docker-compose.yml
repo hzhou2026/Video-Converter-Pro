@@ -1,0 +1,106 @@
+services:
+  # ============================================
+  # Redis
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: video-converter-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - video-converter-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    command: redis-server --appendonly yes
+
+  # ============================================
+  # Backend
+  # ============================================
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: video-converter-backend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - REDIS_URL=redis://redis:6379
+      - MAX_FILE_SIZE=2302541252
+      - MAX_CONCURRENT_JOBS=3
+      - FRONTEND_URL=http://localhost
+    volumes:
+      # Volúmenes persistentes para archivos
+      - uploads:/app/uploads
+      - outputs:/app/outputs
+      - temp:/app/temp
+      - cache:/app/cache
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - video-converter-network
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:3000/api/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+# ============================================
+# Frontend - React con Nginx
+# ============================================
+  frontend:
+    build:
+      context: ./tfg-frontend
+      dockerfile: Dockerfile
+    container_name: video-converter-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - video-converter-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+# ============================================
+# Volúmenes persistentes
+# ============================================
+volumes:
+  redis_data:
+    driver: local
+  uploads:
+    driver: local
+  outputs:
+    driver: local
+  temp:
+    driver: local
+  cache:
+    driver: local
+
+# ============================================
+# Red - Comunicación entre contenedores
+# ============================================
+networks:
+  video-converter-network:
+    driver: bridge
