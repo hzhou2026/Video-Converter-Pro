@@ -16,9 +16,9 @@ export const useSocket = () => {
     // En producción con Docker: nginx hace proxy de /socket.io/
     const socketUrl = isDevelopment 
       ? 'http://localhost:3000'
-      : window.location.origin;  // Usa la misma URL del frontend
+      : globalThis.location.origin;  // Usa la misma URL del frontend
 
-    console.log('🔌 Connecting to Socket.IO:', socketUrl);
+    console.log('Connecting to Socket.IO:', socketUrl);
 
     const newSocket = io(socketUrl, {
       reconnection: true,
@@ -30,23 +30,23 @@ export const useSocket = () => {
     setSocket(newSocket);
 
     newSocket.on('connect', () => {
-      console.log('✅ Socket connected:', newSocket.id);
+      console.log('Socket connected:', newSocket.id);
     });
 
     newSocket.on('disconnect', (reason) => {
-      console.log('❌ Socket disconnected:', reason);
+      console.log('Socket disconnected:', reason);
     });
 
     newSocket.on('connect_error', (error) => {
-      console.error('⚠️ Socket connection error:', error.message);
+      console.error('Socket connection error:', error.message);
     });
 
     newSocket.on('reconnect', (attemptNumber) => {
-      console.log('🔄 Socket reconnected after', attemptNumber, 'attempts');
+      console.log('Socket reconnected after', attemptNumber, 'attempts');
     });
 
     return () => {
-      console.log('🔌 Closing socket connection');
+      console.log('Closing socket connection');
       newSocket.close();
     };
   }, []);
