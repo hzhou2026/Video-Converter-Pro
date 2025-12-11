@@ -11,7 +11,7 @@ const TABS = [
 ];
 
 function App() {
-  const socket = useSocket('http://localhost:3000');
+  const socket = useSocket();
   
   const [jobs, setJobs] = useState([]);
   const [activeTab, setActiveTab] = useState('upload');
