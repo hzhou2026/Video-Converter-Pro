@@ -1,11 +1,9 @@
-// Detectar si estamos en desarrollo o producción
 const isDevelopment = import.meta.env.DEV;
 
-// En desarrollo: usar localhost:3000
-// En producción con Docker: usar la misma URL (nginx hace proxy)
+// Configurar la URL base según el entorno
 const BASE_URL = isDevelopment 
   ? 'http://localhost:3000'
-  : '';  // En producción, nginx hace proxy de /api/
+  : '';
 
 const handleResponse = async (response) => {
   if (!response.ok) {
@@ -18,7 +16,7 @@ const handleResponse = async (response) => {
 const request = async (endpoint, options = {}) => {
   try {
     const url = `${BASE_URL}${endpoint}`;
-    console.log('🌐 API Request:', url);
+    console.log('API Request:', url);
     
     const response = await fetch(url, {
       headers: {
@@ -29,7 +27,7 @@ const request = async (endpoint, options = {}) => {
     });
     return handleResponse(response);
   } catch (error) {
-    console.error(`❌ API Error (${endpoint}):`, error);
+    console.error(`API Error (${endpoint}):`, error);
     throw error;
   }
 };
@@ -47,17 +45,17 @@ export const api = {
   
   createJob: async (formData) => {
     try {
-      console.log('📤 Sending conversion request...');
+      console.log('Sending conversion request...');
       const url = `${BASE_URL}/api/convert`;
       const response = await fetch(url, {
         method: 'POST',
         body: formData
       });
       const data = await handleResponse(response);
-      console.log('✅ Conversion request successful:', data);
+      console.log('Conversion request successful:', data);
       return data;
     } catch (error) {
-      console.error('❌ API Error (createJob):', error);
+      console.error('API Error (createJob):', error);
       throw error;
     }
   },
