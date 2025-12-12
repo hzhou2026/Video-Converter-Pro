@@ -19,6 +19,13 @@ const Queue = require("bull");
 const Redis = require("ioredis");
 const socketIO = require("socket.io");
 const http = require("node:http");
+const {
+  validateConversionCompatibility,
+  resolveOutputFormat,
+  applyOutputFormat,
+  PRESET_FORMAT_COMPATIBILITY,
+  FORMAT_CODEC_COMPATIBILITY,
+} = require('./compatibilidad.js');
 
 const app = express();
 const server = http.createServer(app);
@@ -36,7 +43,6 @@ const config = {
   maxFileSize: Number.parseInt(process.env.MAX_FILE_SIZE) || 2000 * 1024 * 1024, // 2GB
   maxConcurrentJobs: Number.parseInt(process.env.MAX_CONCURRENT_JOBS) || 3,
   redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
-  enableCache: process.env.ENABLE_CACHE !== 'false',
   jwtSecret: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
   storageType: process.env.STORAGE_TYPE || 'local', // 'local' o 's3'
   s3Bucket: process.env.S3_BUCKET,
@@ -50,14 +56,117 @@ const cleanupConfig = {
   deleteInputAfterProcessing: true,
   deleteOutputAfterDownload: true,
   maxDownloads: 1,
-  tempFileRetention: 300000,
   failedJobRetention: 600000,
-  completedJobRetention: 1800000
+  completedJobRetention: 1800000,
+  undownloadedJobRetention: 7200000
 };
 
-// ===================== TRACKING DE DESCARGAS =====================
+// ===================== TRACKING =====================
 
 const downloadTracker = new Map();
+const activeFFmpegProcesses = new Map();
+
+// Inicializar tracking de descarga
+function initDownloadTracking(jobId) {
+  if (!downloadTracker.has(jobId)) {
+    downloadTracker.set(jobId, {
+      count: 0,
+      downloadingClients: new Set(),
+      lastDownloadedAt: null,
+      fullyDownloaded: false
+    });
+  }
+  return downloadTracker.get(jobId);
+}
+
+// Marcar cliente como descargando
+function startDownload(jobId, clientId) {
+  const tracking = initDownloadTracking(jobId);
+  tracking.downloadingClients.add(clientId);
+  logger.info(`Client ${clientId} started downloading job ${jobId}`);
+}
+
+// Marcar descarga como completa
+function finishDownload(jobId, clientId, success = true) {
+  const tracking = downloadTracker.get(jobId);
+  if (!tracking) return;
+
+  tracking.downloadingClients.delete(clientId);
+
+  if (success) {
+    tracking.count++;
+    tracking.lastDownloadedAt = Date.now();
+    tracking.fullyDownloaded = true;
+    logger.info(`Client ${clientId} finished downloading job ${jobId} (total downloads: ${tracking.count})`);
+  } else {
+    logger.warn(`Client ${clientId} failed to download job ${jobId}`);
+  }
+}
+
+// Verificar si un archivo está siendo descargado
+function isBeingDownloaded(jobId) {
+  const tracking = downloadTracker.get(jobId);
+  return tracking && tracking.downloadingClients.size > 0;
+}
+
+// ===================== TRACKING DE USUARIOS Y SESIONES =====================
+
+// Mapear socket.id
+const socketToUser = new Map();
+const userToSockets = new Map();
+const userJobs = new Map();
+
+// Asociar un socket con un usuario
+function associateSocketWithUser(socketId, userId) {
+  socketToUser.set(socketId, userId);
+  
+  if (!userToSockets.has(userId)) {
+    userToSockets.set(userId, new Set());
+  }
+  userToSockets.get(userId).add(socketId);
+  
+  logger.info(`Socket ${socketId} associated with user ${userId}`);
+}
+
+// Desasociar un socket de un usuario
+function disassociateSocket(socketId) {
+  const userId = socketToUser.get(socketId);
+  if (!userId) return null;
+  
+  socketToUser.delete(socketId);
+  
+  const userSockets = userToSockets.get(userId);
+  if (userSockets) {
+    userSockets.delete(socketId);
+    if (userSockets.size === 0) {
+      userToSockets.delete(userId);
+      logger.info(`User ${userId} has no more connected sockets`);
+      return userId; // Usuario completamente desconectado
+    }
+  }
+  
+  return null; // Usuario aún tiene otras conexiones
+}
+
+// Asociar un job con un usuario
+function associateJobWithUser(jobId, userId) {
+  if (!userJobs.has(userId)) {
+    userJobs.set(userId, new Set());
+  }
+  userJobs.get(userId).add(jobId);
+  logger.info(`Job ${jobId} associated with user ${userId}`);
+}
+
+// Obtener todos los jobs de un usuario
+function getUserJobs(userId) {
+  return Array.from(userJobs.get(userId) || []);
+}
+
+// Verificar si un usuario está conectado
+function isUserConnected(userId) {
+  const sockets = userToSockets.get(userId);
+  return sockets && sockets.size > 0;
+}
 
 // ===================== LOGGING =====================
 
@@ -113,8 +222,6 @@ app.use('/api/batch-convert', uploadLimiter);
 const dirs = {
   uploads: process.env.UPLOADS_DIR || "uploads",
   outputs: process.env.OUTPUTS_DIR || "outputs",
-  temp: process.env.TEMP_DIR || "temp",
-  cache: process.env.CACHE_DIR || "cache"
 };
 
 // Crear directorios si no existen
@@ -123,6 +230,73 @@ for (const dir of Object.values(dirs)) {
     fsSync.mkdirSync(dir, { recursive: true });
   }
 }
+
+// ===================== GESTIÓN DE TRABAJOS =====================
+class JobManager {
+  constructor(socketIO) {
+    this.jobs = new Map();
+    this.bullJobIds = new Map();
+    this.emitter = new EventEmitter();
+    this.io = socketIO;
+  }
+
+  createJob(data) {
+    const jobId = uuidv4();
+    const job = {
+      id: jobId,
+      ...data,
+      status: 'queued',
+      progress: 0,
+      createdAt: Date.now(),
+      metadata: {}
+    };
+    this.jobs.set(jobId, job);
+    this.emitter.emit('job:created', job);
+    return job;
+  }
+
+  setBullJobId(jobId, bullJobId) {
+    this.bullJobIds.set(jobId, bullJobId);
+  }
+
+  getBullJobId(jobId) {
+    return this.bullJobIds.get(jobId);
+  }
+
+  updateJob(jobId, updates) {
+    const job = this.jobs.get(jobId);
+    if (job) {
+      Object.assign(job, updates);
+      this.emitter.emit('job:updated', job);
+      this.io.to(jobId).emit('job:update', job);
+    }
+    return job;
+  }
+
+  getJob(jobId) {
+    return this.jobs.get(jobId);
+  }
+
+  getAllJobs(userId = null) {
+    const jobs = Array.from(this.jobs.values());
+    if (userId) {
+      return jobs.filter(job => job.userId === userId);
+    }
+    return jobs;
+  }
+
+  deleteJob(jobId) {
+    const job = this.jobs.get(jobId);
+    if (job) {
+      this.jobs.delete(jobId);
+      this.bullJobIds.delete(jobId);
+      this.emitter.emit('job:deleted', job);
+    }
+    return job;
+  }
+}
+
+const jobManager = new JobManager(io);
 
 // ===================== REDIS & QUEUE =====================
 
@@ -241,155 +415,104 @@ videoQueue.process(config.maxConcurrentJobs, async (job) => {
   }
 });
 
-// ===================== TRACKING DE PROCESOS FFMPEG =====================
-const activeFFmpegProcesses = new Map();
-
-// ===================== GESTIÓN DE TRABAJOS =====================
-
-class JobManager {
-  constructor() {
-    this.jobs = new Map();
-    this.bullJobIds = new Map(); // Mapeo jobId -> Bull job ID
-    this.emitter = new EventEmitter();
-  }
-
-  createJob(data) {
-    const jobId = uuidv4();
-    const job = {
-      id: jobId,
-      ...data,
-      status: 'queued',
-      progress: 0,
-      createdAt: Date.now(),
-      metadata: {}
-    };
-    this.jobs.set(jobId, job);
-    this.emitter.emit('job:created', job);
-    return job;
-  }
-
-  // Vincular job con Bull job
-  setBullJobId(jobId, bullJobId) {
-    this.bullJobIds.set(jobId, bullJobId);
-  }
-
-  getBullJobId(jobId) {
-    return this.bullJobIds.get(jobId);
-  }
-
-  updateJob(jobId, updates) {
-    const job = this.jobs.get(jobId);
-    if (job) {
-      Object.assign(job, updates);
-      this.emitter.emit('job:updated', job);
-      io.to(jobId).emit('job:update', job);
-    }
-    return job;
-  }
-
-  getJob(jobId) {
-    return this.jobs.get(jobId);
-  }
-
-  getAllJobs(userId = null) {
-    const jobs = Array.from(this.jobs.values());
-    if (userId) {
-      return jobs.filter(job => job.userId === userId);
-    }
-    return jobs;
-  }
-
-  deleteJob(jobId) {
-    const job = this.jobs.get(jobId);
-    if (job) {
-      this.jobs.delete(jobId);
-      this.bullJobIds.delete(jobId);
-      this.emitter.emit('job:deleted', job);
-    }
-    return job;
-  }
-}
-
-const jobManager = new JobManager();
-
 // ===================== PRESETS =====================
 
 const PRESETS = {
-  // Presets básicos
-  'ultra': {
+  // ========== CODECS MODERNOS (H.264/H.265/AV1/VP9) ==========
+
+  'h264-ultra': {
     videoCodec: 'libx264',
     audioCodec: 'aac',
     crf: 15,
     preset: 'veryslow',
     audioBitrate: '320k',
-    description: 'Calidad ultra para archivos importantes',
+    description: 'H.264 Ultra - Máxima calidad',
     allowCustomOptions: true
   },
-  'high-quality': {
+  'h264-high': {
     videoCodec: 'libx264',
     audioCodec: 'aac',
     crf: 18,
     preset: 'slow',
     audioBitrate: '256k',
-    description: 'Calidad alta para la mayoría de los usos',
+    description: 'H.264 Alta Calidad',
     allowCustomOptions: true
   },
-  'balanced': {
+  'h264-normal': {
     videoCodec: 'libx264',
     audioCodec: 'aac',
     crf: 23,
     preset: 'medium',
     audioBitrate: '192k',
-    description: 'Calidad equilibrada y tamaño de archivo',
+    description: 'H.264 Calidad Normal - Balance ideal',
     allowCustomOptions: true
   },
-  'fast': {
+  'h264-fast': {
     videoCodec: 'libx264',
     audioCodec: 'aac',
     crf: 28,
     preset: 'fast',
     audioBitrate: '128k',
-    description: 'Rápido con calidad decente',
+    description: 'H.264 Rápido - Menor calidad pero más rápido',
     allowCustomOptions: true
   },
 
-  // Presets avanzados
-  'av1': {
-    videoCodec: 'libaom-av1',
-    audioCodec: 'opus',
-    crf: 30,
-    preset: 6,
-    audioBitrate: '128k',
-    description: 'AV1 codec para mejor compresión que H.264 y H.265',
+  'h265-high': {
+    videoCodec: 'libx265',
+    audioCodec: 'aac',
+    crf: 24,
+    preset: 'medium',
+    audioBitrate: '192k',
+    description: 'H.265/HEVC Alta Calidad - 50% menos tamaño que H.264',
     allowCustomOptions: true
   },
-  'hevc': {
+  'h265-normal': {
     videoCodec: 'libx265',
     audioCodec: 'aac',
     crf: 28,
     preset: 'medium',
     audioBitrate: '128k',
-    description: 'H.265/HEVC para mejor compresión que H.264',
-    allowCustomOptions: true
-  },
-  'vp9': {
-    videoCodec: 'libvpx-vp9',
-    audioCodec: 'opus',
-    crf: 31,
-    preset: 'good',
-    audioBitrate: '128k',
-    description: 'VP9 mayor compabilidad web',
+    description: 'H.265/HEVC Normal - Mejor compresión que H.264',
     allowCustomOptions: true
   },
 
-  'webm-balanced': {
+  'av1-high': {
+    videoCodec: 'libaom-av1',
+    audioCodec: 'libopus',
+    crf: 28,
+    preset: 6,
+    audioBitrate: '192k',
+    description: 'AV1 Alta Calidad - Mejor compresión moderna',
+    allowCustomOptions: true
+  },
+  'av1-normal': {
+    videoCodec: 'libaom-av1',
+    audioCodec: 'libopus',
+    crf: 30,
+    preset: 6,
+    audioBitrate: '128k',
+    description: 'AV1 Normal - Codec del futuro',
+    allowCustomOptions: true
+  },
+
+  'vp9-web': {
+    videoCodec: 'libvpx-vp9',
+    audioCodec: 'libopus',
+    crf: 31,
+    preset: 'good',
+    audioBitrate: '128k',
+    description: 'VP9 para Web - Compatible con navegadores',
+    allowCustomOptions: true
+  },
+
+  'webm-vp9': {
     videoCodec: 'libvpx-vp9',
     audioCodec: 'libopus',
     crf: 31,
     preset: 'good',
     audioBitrate: '128k',
     outputFormat: 'webm',
-    description: 'WebM con VP9 y Opus (calidad balanceada)',
+    description: 'WebM VP9 - Formato web moderno',
     extraOptions: [
       '-b:v', '0',
       '-tile-columns', '2',
@@ -398,12 +521,12 @@ const PRESETS = {
     ],
     allowCustomOptions: true
   },
-  'webm-fast': {
+  'webm-vp8-fast': {
     videoCodec: 'libvpx',
     audioCodec: 'libvorbis',
     audioBitrate: '128k',
     outputFormat: 'webm',
-    description: 'WebM con VP8 (conversión rápida)',
+    description: 'WebM VP8 Rápido - Conversión veloz',
     extraOptions: [
       '-b:v', '1M',
       '-quality', 'good',
@@ -412,7 +535,66 @@ const PRESETS = {
     allowCustomOptions: true
   },
 
-  // Presets para redes sociales
+  // ========== STREAMING & WEB ==========
+
+  'web-streaming': {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    crf: 23,
+    preset: 'medium',
+    audioBitrate: '128k',
+    description: 'Streaming Web Optimizado',
+    extraOptions: [
+      '-movflags', '+faststart',
+      '-profile:v', 'main',
+      '-level', '4.0',
+      '-g', '48',
+      '-keyint_min', '48',
+      '-sc_threshold', '0'
+    ],
+    allowCustomOptions: true
+  },
+  'hls-streaming': {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    crf: 23,
+    preset: 'medium',
+    audioBitrate: '128k',
+    description: 'HLS Streaming Adaptativo',
+    outputFormat: 'hls',
+    extraOptions: [
+      '-hls_time', '10',
+      '-hls_list_size', '0',
+      '-hls_segment_filename', 'segment_%03d.ts'
+    ],
+    allowCustomOptions: true
+  },
+
+  'mobile-optimized': {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    crf: 28,
+    preset: 'fast',
+    audioBitrate: '96k',
+    resolution: '720x?',
+    description: 'Optimizado para Móviles',
+    extraOptions: ['-profile:v', 'baseline', '-level', '3.0'],
+    allowCustomOptions: true
+  },
+
+  'gif-animated': {
+    description: 'GIF Animado - Para clips cortos',
+    outputFormat: 'gif',
+    fps: 10,
+    resolution: '480x?',
+    extraOptions: [
+      '-vf', 'fps=10,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse'
+    ],
+    allowCustomOptions: true
+  },
+
+  // ========== REDES SOCIALES ==========
+
   'youtube-4k': {
     videoCodec: 'libx264',
     audioCodec: 'aac',
@@ -421,7 +603,7 @@ const PRESETS = {
     audioBitrate: '256k',
     resolution: '3840x2160',
     fps: 30,
-    description: 'Optimizado para YouTube 4K',
+    description: 'YouTube 4K (3840x2160)',
     extraOptions: ['-movflags', '+faststart', '-pix_fmt', 'yuv420p'],
     allowCustomOptions: true
   },
@@ -433,11 +615,12 @@ const PRESETS = {
     audioBitrate: '192k',
     resolution: '1920x1080',
     fps: 30,
-    description: 'Optimizado para YouTube 1080p',
+    description: 'YouTube 1080p (Full HD)',
     extraOptions: ['-movflags', '+faststart', '-pix_fmt', 'yuv420p'],
     allowCustomOptions: true
   },
-  'instagram': {
+
+  'instagram-post': {
     videoCodec: 'libx264',
     audioCodec: 'aac',
     crf: 23,
@@ -446,7 +629,7 @@ const PRESETS = {
     resolution: '1080x1080',
     fps: 30,
     maxDuration: 60,
-    description: 'Formato cuadrado para publicaciones de Instagram',
+    description: 'Instagram Post (1:1 cuadrado)',
     extraOptions: ['-movflags', '+faststart'],
     allowCustomOptions: true
   },
@@ -459,11 +642,12 @@ const PRESETS = {
     resolution: '1080x1920',
     fps: 30,
     maxDuration: 90,
-    description: 'Formato vertical para Reels de Instagram',
+    description: 'Instagram Reel (9:16 vertical)',
     extraOptions: ['-movflags', '+faststart'],
     allowCustomOptions: true
   },
-  'tiktok': {
+
+  'tiktok-video': {
     videoCodec: 'libx264',
     audioCodec: 'aac',
     crf: 23,
@@ -472,11 +656,12 @@ const PRESETS = {
     resolution: '1080x1920',
     fps: 30,
     maxDuration: 180,
-    description: 'Optimizado para TikTok',
+    description: 'TikTok (9:16 vertical)',
     extraOptions: ['-movflags', '+faststart'],
     allowCustomOptions: true
   },
-  'twitter': {
+
+  'twitter-video': {
     videoCodec: 'libx264',
     audioCodec: 'aac',
     crf: 25,
@@ -484,123 +669,63 @@ const PRESETS = {
     audioBitrate: '128k',
     maxSize: '512MB',
     maxDuration: 140,
-    description: 'Optimizado para Twitter/X',
+    description: 'Twitter/X (límite 512MB)',
     extraOptions: ['-movflags', '+faststart'],
     allowCustomOptions: true
   },
 
-  // Presets especializados
-  'web-streaming': {
-    videoCodec: 'libx264',
-    audioCodec: 'aac',
-    crf: 23,
-    preset: 'medium',
-    audioBitrate: '128k',
-    description: 'Optimizado para streaming web',
-    extraOptions: [
-      '-movflags', '+faststart',
-      '-profile:v', 'main',
-      '-level', '4.0',
-      '-g', '48',
-      '-keyint_min', '48',
-      '-sc_threshold', '0'
-    ],
-    allowCustomOptions: true
-  },
-  'hls': {
-    videoCodec: 'libx264',
-    audioCodec: 'aac',
-    crf: 23,
-    preset: 'medium',
-    audioBitrate: '128k',
-    description: 'format HLS para streaming adaptativo',
-    outputFormat: 'hls',
-    extraOptions: [
-      '-hls_time', '10',
-      '-hls_list_size', '0',
-      '-hls_segment_filename', 'segment_%03d.ts'
-    ],
-    allowCustomOptions: true
-  },
-  'gif': {
-    description: 'Convertir a GIF animado',
-    outputFormat: 'gif',
-    fps: 10,
-    resolution: '480x?',
-    extraOptions: [
-      '-vf', 'fps=10,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse'
-    ],
-    allowCustomOptions: true
-  },
-  'mobile': {
-    videoCodec: 'libx264',
-    audioCodec: 'aac',
-    crf: 28,
-    preset: 'fast',
-    audioBitrate: '96k',
-    resolution: '720x?',
-    description: 'Optimizado para dispositivos móviles',
-    extraOptions: ['-profile:v', 'baseline', '-level', '3.0'],
-    allowCustomOptions: true
-  },
+  // ========== LOSSLESS & EDICIÓN PROFESIONAL ==========
 
-  // Presets para videos raw/sin compresión
-  'raw-uncompressed': {
-    videoCodec: 'rawvideo',
+  'prores-hq': {
+    videoCodec: 'prores_ks',
     audioCodec: 'pcm_s16le',
-    description: 'Video sin comprimir en contenedor AVI (archivos ENORMES - solo para clips cortos)',
-    outputFormat: 'avi',
-    maxDuration: 60,
+    description: 'ProRes 422 HQ - Producción profesional',
+    outputFormat: 'mov',
     extraOptions: [
-      '-pix_fmt', 'yuv420p',
-      '-vtag', 'I420'
+      '-profile:v', '3',
+      '-pix_fmt', 'yuv422p10le',
+      '-vendor', 'apl0'
+    ],
+    allowCustomOptions: false
+  },
+  'prores-standard': {
+    videoCodec: 'prores_ks',
+    audioCodec: 'pcm_s16le',
+    description: 'ProRes 422 - Estándar profesional',
+    outputFormat: 'mov',
+    extraOptions: [
+      '-profile:v', '2',
+      '-pix_fmt', 'yuv422p10le'
+    ],
+    allowCustomOptions: false
+  },
+  'prores-lt': {
+    videoCodec: 'prores_ks',
+    audioCodec: 'pcm_s16le',
+    description: 'ProRes LT - Edición ligera',
+    outputFormat: 'mov',
+    extraOptions: [
+      '-profile:v', '1',
+      '-pix_fmt', 'yuv422p10le'
+    ],
+    allowCustomOptions: false
+  },
+  'prores-proxy': {
+    videoCodec: 'prores_ks',
+    audioCodec: 'pcm_s16le',
+    description: 'ProRes Proxy - Edición offline',
+    outputFormat: 'mov',
+    extraOptions: [
+      '-profile:v', '0',
+      '-pix_fmt', 'yuv422p10le'
     ],
     allowCustomOptions: false
   },
 
-  'avi-uncompressed': {
-    videoCodec: 'rawvideo',
-    audioCodec: 'pcm_s16le',
-    description: 'AVI sin comprimir con YUV420P (mejor compatibilidad que RGB)',
-    outputFormat: 'avi',
-    maxDuration: 60,
-    extraOptions: [
-      '-pix_fmt', 'yuv420p',
-      '-vtag', 'I420'
-    ],
-    allowCustomOptions: false
-  },
-
-  'avi-uncompressed-rgb': {
-    videoCodec: 'rawvideo',
-    audioCodec: 'pcm_s16le',
-    description: 'AVI sin comprimir en RGB24 (archivos muy grandes)',
-    outputFormat: 'avi',
-    maxDuration: 60,
-    extraOptions: [
-      '-pix_fmt', 'rgb24',
-      '-vtag', 'DIB '
-    ],
-    allowCustomOptions: false
-  },
-
-  // LOSSLESS - Mejores opciones
-  'avi-lossless': {
-    videoCodec: 'huffyuv',
-    audioCodec: 'pcm_s16le',
-    description: 'AVI con compresión lossless HuffYUV (~50% del tamaño raw)',
-    outputFormat: 'avi',
-    extraOptions: [
-      '-pix_fmt', 'yuv422p',
-      '-pred', 'left'
-    ],
-    allowCustomOptions: false
-  },
-
-  'avi-ffv1': {
+  'avi-ffv1-lossless': {
     videoCodec: 'ffv1',
     audioCodec: 'pcm_s16le',
-    description: 'AVI con FFV1 (mejor compresión lossless, ideal para archivo)',
+    description: 'FFV1 Lossless - Archivo profesional',
     outputFormat: 'avi',
     extraOptions: [
       '-level', '3',
@@ -612,11 +737,21 @@ const PRESETS = {
     ],
     allowCustomOptions: false
   },
-
-  'avi-utvideo': {
+  'avi-huffyuv-lossless': {
+    videoCodec: 'huffyuv',
+    audioCodec: 'pcm_s16le',
+    description: 'HuffYUV Lossless - ~50% tamaño raw',
+    outputFormat: 'avi',
+    extraOptions: [
+      '-pix_fmt', 'yuv422p',
+      '-pred', 'left'
+    ],
+    allowCustomOptions: false
+  },
+  'avi-utvideo-lossless': {
     videoCodec: 'utvideo',
     audioCodec: 'pcm_s16le',
-    description: 'AVI con UT Video (rápido y lossless, bueno para edición)',
+    description: 'UT Video Lossless - Rápido para edición',
     outputFormat: 'avi',
     extraOptions: [
       '-pix_fmt', 'yuv422p',
@@ -625,10 +760,34 @@ const PRESETS = {
     allowCustomOptions: false
   },
 
-  'avi-dv': {
+  'avi-mjpeg-high': {
+    videoCodec: 'mjpeg',
+    audioCodec: 'pcm_s16le',
+    description: 'MJPEG Alta Calidad - Para edición',
+    outputFormat: 'avi',
+    extraOptions: [
+      '-q:v', '2',
+      '-pix_fmt', 'yuvj422p',
+      '-huffman', 'optimal'
+    ],
+    allowCustomOptions: false
+  },
+  'avi-mjpeg-normal': {
+    videoCodec: 'mjpeg',
+    audioCodec: 'pcm_s16le',
+    description: 'MJPEG Normal - Balance tamaño/calidad',
+    outputFormat: 'avi',
+    extraOptions: [
+      '-q:v', '5',
+      '-pix_fmt', 'yuvj420p'
+    ],
+    allowCustomOptions: false
+  },
+
+  'avi-dv-pal': {
     videoCodec: 'dvvideo',
     audioCodec: 'pcm_s16le',
-    description: 'DV para edición profesional (25 Mbps, compatible)',
+    description: 'DV PAL (720x576) - Edición profesional',
     outputFormat: 'avi',
     resolution: '720x576',
     fps: 25,
@@ -637,11 +796,10 @@ const PRESETS = {
     ],
     allowCustomOptions: false
   },
-
   'avi-dv-ntsc': {
     videoCodec: 'dvvideo',
     audioCodec: 'pcm_s16le',
-    description: 'DV NTSC para edición profesional (25 Mbps)',
+    description: 'DV NTSC (720x480) - Edición profesional',
     outputFormat: 'avi',
     resolution: '720x480',
     fps: 30,
@@ -651,77 +809,29 @@ const PRESETS = {
     allowCustomOptions: false
   },
 
-  'avi-mjpeg-high': {
-    videoCodec: 'mjpeg',
+  // ========== SIN COMPRESIÓN (ARCHIVOS MUY GRANDES) ==========
+
+  'avi-raw-uncompressed': {
+    videoCodec: 'rawvideo',
     audioCodec: 'pcm_s16le',
-    description: 'MJPEG alta calidad (compresión moderada, bueno para edición)',
+    description: 'RAW Sin Comprimir - ¡Archivos ENORMES!',
     outputFormat: 'avi',
+    maxDuration: 60,
     extraOptions: [
-      '-q:v', '2',
-      '-pix_fmt', 'yuvj422p',
-      '-huffman', 'optimal'
+      '-pix_fmt', 'yuv420p',
+      '-vtag', 'I420'
     ],
     allowCustomOptions: false
   },
-
-  'avi-mjpeg': {
-    videoCodec: 'mjpeg',
+  'avi-raw-rgb': {
+    videoCodec: 'rawvideo',
     audioCodec: 'pcm_s16le',
-    description: 'MJPEG calidad media (balance tamaño/calidad)',
+    description: 'RAW RGB24 - ¡Archivos MUY GRANDES!',
     outputFormat: 'avi',
+    maxDuration: 60,
     extraOptions: [
-      '-q:v', '5',
-      '-pix_fmt', 'yuvj420p'
-    ],
-    allowCustomOptions: false
-  },
-
-  // Opciones adicionales útiles
-  'prores-proxy': {
-    videoCodec: 'prores_ks',
-    audioCodec: 'pcm_s16le',
-    description: 'Apple ProRes Proxy (edición offline, tamaño pequeño)',
-    outputFormat: 'mov',
-    extraOptions: [
-      '-profile:v', '0',
-      '-pix_fmt', 'yuv422p10le'
-    ],
-    allowCustomOptions: false
-  },
-
-  'prores-lt': {
-    videoCodec: 'prores_ks',
-    audioCodec: 'pcm_s16le',
-    description: 'Apple ProRes LT (buena calidad para edición)',
-    outputFormat: 'mov',
-    extraOptions: [
-      '-profile:v', '1',
-      '-pix_fmt', 'yuv422p10le'
-    ],
-    allowCustomOptions: false
-  },
-
-  'prores-standard': {
-    videoCodec: 'prores_ks',
-    audioCodec: 'pcm_s16le',
-    description: 'Apple ProRes 422 (calidad estándar profesional)',
-    outputFormat: 'mov',
-    extraOptions: [
-      '-profile:v', '2',
-      '-pix_fmt', 'yuv422p10le'
-    ],
-    allowCustomOptions: false
-  },
-
-  'prores-hq': {
-    videoCodec: 'prores_ks',
-    audioCodec: 'pcm_s16le',
-    description: 'Apple ProRes 422 HQ (alta calidad, producción)',
-    outputFormat: 'mov',
-    extraOptions: [
-      '-profile:v', '3',
-      '-pix_fmt', 'yuv422p10le',
-      '-vendor', 'apl0'
+      '-pix_fmt', 'rgb24',
+      '-vtag', 'DIB '
     ],
     allowCustomOptions: false
   }
@@ -912,7 +1022,6 @@ function getSpeedFilter(speed) {
 
 function getSubtitlesFilter(subtitles) {
   if (subtitles && fsSync.existsSync(subtitles)) {
-    // Use String.raw to avoid manual escaping of backslashes and colons
     const filterArg = String.raw`subtitles='${subtitles}'`;
     return [filterArg];
   }
@@ -1037,7 +1146,13 @@ function applyCommandOptions(command, options, presetConfig, preset, format) {
     customOptions = []
   } = options;
 
-  // Punto de inicio y duración (aplicar primero para recortar el input)
+  // Validar compatibilidad de conversión
+  const validation = validateConversionCompatibility(preset, format, presetConfig);
+  if (!validation.valid) {
+    throw new Error(`Incompatibilidad detectada: ${validation.message}`);
+  }
+
+  // Punto de inicio y duración
   if (startTime !== null && startTime !== undefined && startTime > 0) {
     command.setStartTime(Number.parseFloat(startTime));
   }
@@ -1046,7 +1161,7 @@ function applyCommandOptions(command, options, presetConfig, preset, format) {
     command.setDuration(Number.parseFloat(duration));
   }
 
-  // Construir y aplicar TODOS los filtros de video de una sola vez
+  // Construir filtros de video
   const videoFilters = buildVideoFilters({
     speed,
     denoise,
@@ -1068,7 +1183,7 @@ function applyCommandOptions(command, options, presetConfig, preset, format) {
     command.videoCodec(presetConfig.videoCodec);
   }
 
-  // Resolución (aplicar después de los filtros)
+  // Resolución
   if (resolution || presetConfig.resolution) {
     const targetResolution = resolution || presetConfig.resolution;
     command.size(targetResolution);
@@ -1080,7 +1195,7 @@ function applyCommandOptions(command, options, presetConfig, preset, format) {
     command.fps(presetConfig.fps);
   }
 
-  // Aplicar opciones de audio (incluye filtros de audio)
+  // Aplicar opciones de audio
   applyAudioOptions(command, {
     removeAudio,
     presetConfig,
@@ -1098,113 +1213,11 @@ function applyCommandOptions(command, options, presetConfig, preset, format) {
     command.outputOptions(outputOptions);
   }
 
-  // Formato de salida
-  const aviPresets = [
-    'raw-uncompressed',
-    'avi-uncompressed',
-    'avi-uncompressed-rgb',
-    'avi-lossless',
-    'avi-ffv1',
-    'avi-utvideo',
-    'avi-dv',
-    'avi-dv-ntsc',
-    'avi-mjpeg',
-    'avi-mjpeg-high'
-  ];
-
-  if (aviPresets.includes(preset)) {
-    command.toFormat('avi');
-  } else if (presetConfig.outputFormat) {
-    command.toFormat(presetConfig.outputFormat);
-  } else if (format === 'webm') {
-
-    command.toFormat('webm');
-
-    if (!presetConfig.videoCodec ||
-      (presetConfig.videoCodec !== 'libvpx' &&
-        presetConfig.videoCodec !== 'libvpx-vp9')) {
-      command.videoCodec('libvpx-vp9');
-      command.outputOptions([
-        '-crf', '31',
-        '-b:v', '0'
-      ]);
-    }
-
-    if (!presetConfig.audioCodec ||
-      (presetConfig.audioCodec !== 'libopus' &&
-        presetConfig.audioCodec !== 'libvorbis')) {
-      command.audioCodec('libopus');
-    }
-  } else {
-    command.toFormat(format);
-  }
+  // === APLICAR FORMATO DE SALIDA (MEJORADO) ===
+  const resolvedFormat = applyOutputFormat(command, preset, format, presetConfig);
+  logger.info(`Output format resolved: ${resolvedFormat} (requested: ${format})`);
 
   return command;
-}
-
-function handleProgress(jobId, progress) {
-  const currentProgress = Math.min(99, Math.round(progress.percent || 0));
-  return redis.hset(`job:${jobId}`, {
-    status: 'processing',
-    progress: currentProgress,
-    currentTime: progress.timemark,
-    fps: progress.currentFps,
-    speed: progress.currentKbps,
-    updatedAt: Date.now()
-  }).then(() =>
-    redis.publish('job:progress', JSON.stringify({
-      jobId,
-      progress: currentProgress,
-      currentTime: progress.timemark,
-      fps: progress.currentFps
-    }))
-  );
-}
-
-async function handleEnd({ jobId, inputPath, outputPath }) {
-  const outputInfo = await getMediaInfo(outputPath);
-  const outputStats = await fs.stat(outputPath);
-
-  const result = {
-    success: true,
-    outputPath,
-    outputSize: outputStats.size,
-    outputInfo,
-    processingTime: Date.now() - jobManager.getJob(jobId).createdAt
-  };
-
-  await redis.publish('job:completed', JSON.stringify({
-    jobId,
-    result
-  }));
-
-  jobManager.updateJob(jobId, {
-    status: 'completed',
-    progress: 100,
-    result,
-    completedAt: Date.now()
-  });
-
-  return result;
-}
-
-async function handleError(jobId, err) {
-  logger.error(`Job ${jobId} error:`, err);
-  jobManager.updateJob(jobId, {
-    status: 'failed',
-    error: err?.message ?? String(err)
-  });
-  await redis.publish('job:failed', JSON.stringify({
-    jobId,
-    error: err?.message ?? String(err)
-  }));
-  let errorObj;
-  if (err instanceof Error) {
-    errorObj = err;
-  } else {
-    errorObj = new Error(`Job ${jobId} failed: ${err?.message ?? String(err)}`);
-  }
-  throw errorObj;
 }
 
 // Verificar si el archivo existe y está accesible
@@ -1224,7 +1237,7 @@ const waitForFile = async (filePath, maxAttempts = 10, delayMs = 500) => {
   throw new Error(`File not accessible after ${maxAttempts} attempts: ${filePath}`);
 };
 
-// Convertir timemark (HH:MM:SS.mmm) a segundos
+// Convertir timemark a segundos
 function timemarkToSeconds(timemark) {
   if (!timemark || timemark === 'N/A' || timemark === '00:00:00.00') return 0;
 
@@ -1457,35 +1470,58 @@ async function cleanupAfterProcessing(jobId, inputPath) {
 }
 
 //LIMPIEZA DESPUÉS DE DESCARGA DEL USUARIO
-async function cleanupAfterDownload(jobId, outputPath) {
+async function scheduleCleanupAfterDownload(jobId, outputPath) {
   if (!cleanupConfig.deleteOutputAfterDownload) return;
 
-  try {
-    const downloadCount = downloadTracker.get(jobId) || 0;
-    downloadTracker.set(jobId, downloadCount + 1);
+  const tracking = downloadTracker.get(jobId);
+  if (!tracking) return;
 
-    if (downloadCount + 1 >= cleanupConfig.maxDownloads) {
-      // Esperar un poco para asegurar que la descarga terminó
-      setTimeout(async () => {
-        try {
-          if (fsSync.existsSync(outputPath)) {
-            await fs.unlink(outputPath);
-            logger.info(`Deleted output file after download: ${outputPath}`);
+  // Verificar si alcanzó el límite de descargas
+  if (tracking.count >= cleanupConfig.maxDownloads) {
+    // Esperar a que NO haya descargas activas
+    const checkInterval = setInterval(async () => {
+      if (!isBeingDownloaded(jobId)) {
+        clearInterval(checkInterval);
+
+        // Esperar un tiempo prudencial adicional
+        setTimeout(async () => {
+          try {
+            // Doble verificación
+            if (isBeingDownloaded(jobId)) {
+              logger.warn(`Job ${jobId} still being downloaded, postponing cleanup`);
+              return;
+            }
+
+            if (fsSync.existsSync(outputPath)) {
+              await fs.unlink(outputPath);
+              logger.info(`✓ Deleted output file after ${tracking.count} download(s): ${outputPath}`);
+            }
+
+            // Limpiar el job del sistema
+            const job = jobManager.getJob(jobId);
+            if (job?.inputPath && fsSync.existsSync(job.inputPath)) {
+              await fs.unlink(job.inputPath);
+              logger.info(`✓ Deleted input file: ${job.inputPath}`);
+            }
+
+            jobManager.deleteJob(jobId);
+            await redis.del(`job:${jobId}`);
+            downloadTracker.delete(jobId);
+
+            logger.info(`✓ Cleaned up job ${jobId} after successful download`);
+          } catch (err) {
+            logger.error(`Error in cleanup for job ${jobId}:`, err);
           }
+        }, 5000); // 5 segundos después de que termine la última descarga activa
+      }
+    }, 1000); // Verificar cada segundo
 
-          // Limpiar el job del sistema
-          jobManager.deleteJob(jobId);
-          await redis.del(`job:${jobId}`);
-          downloadTracker.delete(jobId);
-
-          logger.info(`Cleaned up job ${jobId} after download`);
-        } catch (err) {
-          logger.error(`Error in delayed cleanup for job ${jobId}:`, err);
-        }
-      }, 1000); // 5 segundos de delay
-    }
-  } catch (error) {
-    logger.error(`Failed to cleanup after download for job ${jobId}:`, error);
+    // Timeout de seguridad (5 minutos)
+    setTimeout(() => {
+      clearInterval(checkInterval);
+      logger.warn(`Cleanup timeout for job ${jobId}, forcing cleanup`);
+      scheduleCleanupAfterDownload(jobId, outputPath);
+    }, 300000);
   }
 }
 
@@ -1498,7 +1534,7 @@ const convertVideoWithProgress = async (
   bullJob = null
 ) => {
   const {
-    preset = "balanced",
+    preset = "h264-normal",
     format = "mp4",
     startTime = null,
     duration = null,
@@ -1534,7 +1570,7 @@ const convertVideoWithProgress = async (
     throw error;
   }
 
-  const presetConfig = PRESETS[preset] || PRESETS["balanced"];
+  const presetConfig = PRESETS[preset] || PRESETS["h264-normal"];
   let command = ffmpeg(inputPath);
 
   // Guardar referencia del comando FFmpeg
@@ -1831,7 +1867,7 @@ app.post('/api/analyze', upload.single('media'), async (req, res) => {
       } catch (err) {
         logger.error(`Failed to delete analyzed file ${filePath}:`, err);
       }
-    }, 5000); // 5 segundos de delay para que la respuesta llegue al cliente
+    }, 5000);
 
   } catch (error) {
     logger.error('Analysis error:', error);
@@ -1848,7 +1884,7 @@ app.post('/api/analyze', upload.single('media'), async (req, res) => {
   }
 });
 
-// Sugerir configuraciones óptimas basadas en el análisis
+// Sugerencias de configuración óptima basadas en el análisis
 const suggestOptimalSettings = (info) => {
   const suggestions = [];
 
@@ -1857,17 +1893,29 @@ const suggestOptimalSettings = (info) => {
     if (info.video.width >= 3840) {
       suggestions.push({
         type: 'resolution',
-        message: 'Video 4k. Considerar ajustar a 1080p para la mayoría de los usos.',
+        message: 'Video 4K detectado. Considerar ajustar a 1080p para la mayoría de los usos.',
         preset: 'youtube-1080p'
       });
     }
 
     // Sugerencias de codec
-    if (info.video.codec === 'h264') {
+    if (info.video.codec === 'h264' || info.video.codec === 'avc') {
       suggestions.push({
         type: 'codec',
-        message: 'Video en H.264. Considerar H.265/HEVC para mejor compresión.',
-        preset: 'hevc'
+        message: 'Video en H.264. Considerar H.265/HEVC para 50% mejor compresión con misma calidad.',
+        preset: 'h265-normal'
+      });
+    } else if (info.video.codec === 'mpeg4' || info.video.codec === 'xvid') {
+      suggestions.push({
+        type: 'codec',
+        message: 'Codec antiguo detectado. Recomendamos actualizar a H.264 o H.265.',
+        preset: 'h264-normal'
+      });
+    } else if (info.video.codec === 'vp8') {
+      suggestions.push({
+        type: 'codec',
+        message: 'VP8 detectado. Considerar VP9 para mejor compresión web.',
+        preset: 'vp9-web'
       });
     }
 
@@ -1875,34 +1923,150 @@ const suggestOptimalSettings = (info) => {
     if (info.video.fps > 60) {
       suggestions.push({
         type: 'fps',
-        message: `Se ha detectado una alta tasa de fotogramas (${info.video.fps}fps). Considerar 60fps para reducir el tamaño del archivo.`,
-        option: { fps: 30 }
+        message: `Alta tasa de fotogramas detectada (${Math.round(info.video.fps)}fps). Considerar 60fps o 30fps para reducir tamaño.`,
+        option: { fps: 60 }
       });
     }
-  }
 
-  if (info.audio) {
-    // Sugerencias de bitrate de audio
-    if (info.audio.bitrate > 256000) {
+    // Sugerencias de bitrate excesivo
+    if (info.video.bitrate > 20000000) { // > 20 Mbps
       suggestions.push({
-        type: 'audio',
-        message: 'Se ha detectado un alto bitrate de audio. 192kbps es suficiente para la mayoría de los casos de uso.',
-        option: { audioBitrate: '192k' }
+        type: 'bitrate',
+        message: 'Bitrate muy alto detectado. Puedes reducir significativamente el tamaño sin pérdida notable.',
+        preset: 'h264-high'
       });
     }
   }
 
-  // Sugerencias de tamaño de archivo
-  if (info.size > 1024 * 1024 * 1024) { // > 1GB
-    suggestions.push({
-      type: 'size',
-      message: 'Se ha detectado un archivo grande. Considerar usar el preset "balanced" o "fast".',
-      preset: 'balanced'
-    });
-  }
 
   return suggestions;
 };
+
+// Limpia archivo subido en caso de error
+async function cleanupUploadedFile(filePath) {
+  if (filePath && fsSync.existsSync(filePath)) {
+    try {
+      await fs.unlink(filePath);
+      logger.info(`Cleaned up uploaded file: ${filePath}`);
+    } catch (error) {
+      logger.error(`Failed to cleanup file ${filePath}:`, error);
+    }
+  }
+}
+
+// Valida y normaliza las opciones de conversión
+function parseConversionOptions(body) {
+  const {
+    preset = 'h264-normal',
+    format = 'mp4',
+    resolution,
+    startTime,
+    duration,
+    removeAudio,
+    subtitles,
+    normalizeAudio,
+    denoise,
+    stabilize,
+    speed,
+    crop,
+    rotate,
+    flip,
+    customOptions = []
+  } = body;
+
+  return {
+    preset,
+    format,
+    resolution,
+    startTime: startTime ? Number.parseFloat(startTime) : null,
+    duration: duration ? Number.parseFloat(duration) : null,
+    removeAudio: removeAudio === 'true',
+    subtitles,
+    normalizeAudio: normalizeAudio === 'true',
+    denoise: denoise === 'true',
+    stabilize: stabilize === 'true',
+    speed: speed ? Number.parseFloat(speed) : 1,
+    crop,
+    rotate: rotate ? Number.parseFloat(rotate) : null,
+    flip,
+    customOptions: Array.isArray(customOptions) ? customOptions : []
+  };
+}
+
+// Valida compatibilidad y retorna error si no es válida
+async function validateAndGetFormat(preset, format, filePath) {
+  const presetConfig = PRESETS[preset] || PRESETS['h264-normal'];
+  const validation = validateConversionCompatibility(preset, format, presetConfig);
+
+  if (!validation.valid) {
+    // Limpiar archivo subido
+    await cleanupUploadedFile(filePath);
+
+    return {
+      error: {
+        status: 400,
+        body: {
+          error: 'Configuración incompatible',
+          message: validation.message,
+          suggestedFormats: validation.suggestedFormats,
+          supportedVideoCodecs: validation.supportedVideoCodecs,
+          supportedAudioCodecs: validation.supportedAudioCodecs
+        }
+      }
+    };
+  }
+
+  const resolvedFormat = resolveOutputFormat(preset, format, presetConfig);
+  return { resolvedFormat, presetConfig };
+}
+
+// Crea y encola un trabajo de conversión
+async function createConversionJob(file, resolvedFormat, options, userId) {
+  const inputPath = file.path;
+  const outputFilename = `${path.parse(file.filename).name}_converted.${resolvedFormat}`;
+  const outputPath = path.join(dirs.outputs, outputFilename);
+
+  // Crear job en jobManager
+  const job = jobManager.createJob({
+    type: 'conversion',
+    inputPath,
+    outputPath,
+    inputName: file.originalname,
+    outputName: outputFilename,
+    options,
+    userId
+  });
+
+  logger.info(`Job created: ${job.id} for file: ${file.originalname}`);
+
+  // Guardar en Redis
+  await redis.hset(`job:${job.id}`, {
+    status: 'queued',
+    progress: 0,
+    inputName: file.originalname,
+    outputName: outputFilename,
+    createdAt: Date.now()
+  });
+
+  // Encolar en Bull
+  const bullJob = await videoQueue.add({
+    jobId: job.id,
+    inputPath,
+    outputPath,
+    options: {
+      ...options,
+      format: resolvedFormat
+    }
+  });
+
+  jobManager.setBullJobId(job.id, bullJob.id);
+
+  return {
+    job,
+    outputFilename,
+    resolvedFormat
+  };
+}
 
 // Conversión de video/audio
 app.post('/api/convert', upload.single('file'), async (req, res) => {
@@ -1911,86 +2075,51 @@ app.post('/api/convert', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const {
-      preset = 'balanced',
-      format = 'mp4',
-      resolution,
-      startTime,
-      duration,
-      removeAudio,
-      subtitles,
-      normalizeAudio,
-      denoise,
-      stabilize,
-      speed,
-      crop,
-      rotate,
-      flip,
-      customOptions = []
-    } = req.body;
+    const options = parseConversionOptions(req.body);
+    const { preset, format } = options;
 
-    const inputPath = req.file.path;
-    const outputFilename = `${path.parse(req.file.filename).name}_converted.${format}`;
-    const outputPath = path.join(dirs.outputs, outputFilename);
+    const validation = await validateAndGetFormat(preset, format, req.file.path);
+    if (validation.error) {
+      return res.status(validation.error.status).json(validation.error.body);
+    }
 
-    const job = jobManager.createJob({
-      type: 'conversion',
-      inputPath,
-      outputPath,
-      inputName: req.file.originalname,
-      outputName: outputFilename,
-      options: req.body,
-      userId: req.headers['x-user-id'] || 'anonymous'
-    });
+    const { resolvedFormat } = validation;
 
-    logger.info(`Job created: ${job.id} for file: ${req.file.originalname}`);
+    // Obtener userId (desde header o generar uno temporal)
+    const userId = req.headers['x-user-id'] || `temp-${uuidv4()}`;
+    
+    const { job, outputFilename } = await createConversionJob(
+      req.file,
+      resolvedFormat,
+      options,
+      userId
+    );
 
-    await redis.hset(`job:${job.id}`, {
-      status: 'queued',
-      progress: 0,
-      inputName: req.file.originalname,
-      outputName: outputFilename,
-      createdAt: Date.now()
-    });
-
-    // Agregar job a la cola y GUARDAR el Bull job ID
-    const bullJob = await videoQueue.add({
-      jobId: job.id,
-      inputPath,
-      outputPath,
-      options: {
-        preset,
-        format,
-        resolution,
-        startTime: startTime ? Number.parseFloat(startTime) : null,
-        duration: duration ? Number.parseFloat(duration) : null,
-        removeAudio: removeAudio === 'true',
-        subtitles,
-        normalizeAudio: normalizeAudio === 'true',
-        denoise: denoise === 'true',
-        stabilize: stabilize === 'true',
-        speed: speed ? Number.parseFloat(speed) : 1,
-        crop,
-        rotate: rotate ? Number.parseFloat(rotate) : null,
-        flip,
-        customOptions: Array.isArray(customOptions) ? customOptions : []
-      }
-    });
-
-    // Vincular el job ID con el Bull job ID
-    jobManager.setBullJobId(job.id, bullJob.id);
+    // Agregar asociación job-user
+    associateJobWithUser(job.id, userId);
 
     res.status(201).json({
       jobId: job.id,
+      userId: userId, // Devolver userId para que el frontend lo use
       status: 'queued',
       inputName: req.file.originalname,
       outputName: outputFilename,
-      message: 'Video conversion job created successfully'
+      resolvedFormat,
+      requestedFormat: format,
+      formatAdjusted: resolvedFormat !== format,
+      message: resolvedFormat === format
+        ? 'Video conversion job created successfully'
+        : `Formato ajustado de "${format}" a "${resolvedFormat}" para compatibilidad con preset "${preset}"`
     });
 
   } catch (error) {
     logger.error('Conversion error:', error);
-    res.status(500).json({ error: 'Failed to start conversion', details: error.message });
+    await cleanupUploadedFile(req.file?.path);
+
+    res.status(500).json({
+      error: 'Failed to start conversion',
+      details: error.message
+    });
   }
 });
 
@@ -2037,6 +2166,49 @@ app.post('/api/batch-convert', upload.array('videos', 10), async (req, res) => {
   } catch (error) {
     logger.error('Batch conversion error:', error);
     res.status(500).json({ error: 'Failed to start batch conversion', details: error.message });
+  }
+});
+
+// Validar configuración de conversión
+app.post('/api/validate-conversion', (req, res) => {
+  try {
+    const allowedPresets = Object.keys(PRESETS);
+    if (!allowedPresets.includes(preset)) {
+      throw new Error('Invalid preset');
+    }
+
+    const presetConfig = PRESETS[preset] || PRESETS['h264-normal'];
+    const validation = validateConversionCompatibility(preset, format, presetConfig);
+
+    if (!validation.valid) {
+      return res.status(400).json({
+        valid: false,
+        error: validation.message,
+        suggestedFormats: validation.suggestedFormats,
+        supportedVideoCodecs: validation.supportedVideoCodecs,
+        supportedAudioCodecs: validation.supportedAudioCodecs
+      });
+    }
+
+    const resolvedFormat = resolveOutputFormat(preset, format, presetConfig);
+
+    res.json({
+      valid: true,
+      message: validation.message,
+      preset: preset,
+      requestedFormat: format,
+      resolvedFormat: resolvedFormat,
+      videoCodec: presetConfig.videoCodec,
+      audioCodec: presetConfig.audioCodec,
+      willAutoAdjust: resolvedFormat !== format
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      valid: false,
+      error: 'Error validando configuración',
+      details: error.message
+    });
   }
 });
 
@@ -2167,16 +2339,47 @@ app.get('/api/download/:jobId', async (req, res) => {
     return res.status(404).json({ error: 'Output file not found' });
   }
 
-  // Descargar el archivo
-  res.download(job.outputPath, job.outputName, async (err) => {
-    if (err) {
-      logger.error('Download error:', err);
-    } else {
-      // Limpiar después de descarga exitosa
-      logger.info(`Download completed for job ${req.params.jobId}`);
-      await cleanupAfterDownload(req.params.jobId, job.outputPath);
+  const clientId = `${req.ip}-${Date.now()}`;
+  const jobId = req.params.jobId;
+
+  // Marcar inicio de descarga
+  startDownload(jobId, clientId);
+
+  // Stream el archivo
+  const fileStream = fsSync.createReadStream(job.outputPath);
+
+  // Configurar headers
+  res.setHeader('Content-Disposition', `attachment; filename="${job.outputName}"`);
+  res.setHeader('Content-Type', 'application/octet-stream');
+
+  let downloadSuccess = false;
+
+  // Cuando termina la transferencia
+  fileStream.on('end', () => {
+    downloadSuccess = true;
+    finishDownload(jobId, clientId, true);
+
+    // Programar limpieza SOLO si se descargó completamente
+    scheduleCleanupAfterDownload(jobId, job.outputPath);
+  });
+
+  // Si hay error en la transferencia
+  fileStream.on('error', (err) => {
+    logger.error(`Stream error for job ${jobId}:`, err);
+    finishDownload(jobId, clientId, false);
+  });
+
+  // Si el cliente cancela la descarga
+  req.on('close', () => {
+    if (!downloadSuccess) {
+      logger.warn(`Client ${clientId} disconnected before completing download of job ${jobId}`);
+      finishDownload(jobId, clientId, false);
+      fileStream.destroy();
     }
   });
+
+  // Enviar archivo
+  fileStream.pipe(res);
 });
 
 // Transmitir video convertido
@@ -2216,17 +2419,117 @@ app.get('/api/stream/:jobId', async (req, res) => {
   }
 });
 
+// Obtener formatos compatibles para un preset dado
+app.get('/api/preset/:preset/formats', (req, res) => {
+  try {
+    const preset = req.params.preset;
+    const presetConfig = PRESETS[preset];
+
+    if (!presetConfig) {
+      return res.status(404).json({ error: 'Preset not found' });
+    }
+
+    const compatibleFormats = PRESET_FORMAT_COMPATIBILITY[preset];
+
+    if (compatibleFormats) {
+      res.json({
+        preset,
+        flexible: false,
+        compatibleFormats,
+        requiredFormat: presetConfig.outputFormat || compatibleFormats[0],
+        message: `Este preset requiere formato específico: ${compatibleFormats.join(' o ')}`
+      });
+    } else {
+      // Preset flexible - soporta múltiples formatos
+      res.json({
+        preset,
+        flexible: true,
+        compatibleFormats: ['mp4', 'mkv', 'mov', 'avi', 'webm'],
+        message: 'Este preset es flexible y funciona con múltiples formatos'
+      });
+    }
+
+  } catch (error) {
+    res.status(500).json({
+      error: 'Error obteniendo formatos compatibles',
+      details: error.message
+    });
+  }
+});
+
+// Obtener códecs compatibles para un formato dado
+app.get('/api/format/:format/codecs', (req, res) => {
+  try {
+    const format = req.params.format;
+    const codecs = FORMAT_CODEC_COMPATIBILITY[format];
+
+    if (!codecs) {
+      return res.status(404).json({
+        error: 'Formato no soportado',
+        supportedFormats: Object.keys(FORMAT_CODEC_COMPATIBILITY)
+      });
+    }
+
+    res.json({
+      format,
+      videoCodecs: codecs.video,
+      audioCodecs: codecs.audio,
+      supportsAudio: codecs.audio.length > 0
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      error: 'Error obteniendo códecs compatibles',
+      details: error.message
+    });
+  }
+});
+
+// Obtener estado de usuario y sus jobs
+app.get('/api/user/:userId/status', (req, res) => {
+  const userId = req.params.userId;
+  
+  const jobs = getUserJobs(userId);
+  const connected = isUserConnected(userId);
+  const activeSockets = userToSockets.get(userId)?.size || 0;
+
+  res.json({
+    userId,
+    connected,
+    activeSockets,
+    jobs: jobs.map(jobId => {
+      const job = jobManager.getJob(jobId);
+      return {
+        jobId,
+        status: job?.status || 'unknown',
+        progress: job?.progress || 0
+      };
+    })
+  });
+});
+
 // ===================== SOCKET.IO =====================
 
 io.on('connection', (socket) => {
   logger.info(`Client connected: ${socket.id}`);
 
-  socket.on('subscribe', async (jobId) => {
+  // Asociar socket con userId
+  socket.on('identify', (userId) => {
+    associateSocketWithUser(socket.id, userId);
+  });
+
+  socket.on('subscribe', async (jobId, userId) => {
     try {
+      // Si se proporciona userId en subscribe, asociar
+      if (userId) {
+        associateSocketWithUser(socket.id, userId);
+        associateJobWithUser(jobId, userId);
+      }
+
       socket.join(jobId);
       logger.info(`Client ${socket.id} subscribed to job ${jobId}`);
 
-      // Enviar estado actual del job inmediatamente
+      // Enviar estado actual del job
       const job = jobManager.getJob(jobId);
       if (job) {
         socket.emit('job:update', {
@@ -2235,7 +2538,6 @@ io.on('connection', (socket) => {
           ...job
         });
       } else {
-        // Intentar obtener de Redis si no está en jobManager
         const jobData = await redis.hgetall(`job:${jobId}`);
         if (jobData && Object.keys(jobData).length > 0) {
           socket.emit('job:update', {
@@ -2261,70 +2563,247 @@ io.on('connection', (socket) => {
     logger.info(`Client ${socket.id} unsubscribed from job ${jobId}`);
   });
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     logger.info(`Client disconnected: ${socket.id}`);
+    
+    // Verificar si el usuario está completamente desconectado
+    const disconnectedUserId = disassociateSocket(socket.id);
+    
+    if (disconnectedUserId) {
+      // Usuario completamente desconectado - iniciar limpieza
+      logger.info(`User ${disconnectedUserId} fully disconnected, starting cleanup...`);
+      
+      // Pequeño delay por si el usuario se reconecta inmediatamente
+      setTimeout(async () => {
+        // Verificar de nuevo si el usuario sigue desconectado
+        if (isUserConnected(disconnectedUserId)) {
+          logger.info(`User ${disconnectedUserId} reconnected, skipping cleanup`);
+          return;
+        }
+        const stats = await cleanupUserJobs(disconnectedUserId);
+        logger.info(`Cleanup completed for user ${disconnectedUserId}:`, stats);
+      }, 5000);
+    }
+  });
+
+  // Nuevo evento: limpieza manual
+  socket.on('cleanup-my-jobs', async (userId) => {
+    if (!userId) return;
+    
+    logger.info(`Manual cleanup requested by user ${userId}`);
+    const stats = await cleanupUserJobs(userId);
+    socket.emit('cleanup-completed', stats);
   });
 });
 
-// ===================== LIMPIEZA =====================
+// ===================== FUNCIONES AUXILIARES PARA LIMPIEZA =====================
 
-const cleanup = async () => {
+function isFileAssociatedWithJob(filePath) {
+  return Array.from(jobManager.jobs.values()).some(
+    job => job.inputPath === filePath || job.outputPath === filePath
+  );
+}
+
+function findJobByOutputPath(filePath) {
+  return Array.from(jobManager.jobs.values()).find(
+    job => job.outputPath === filePath
+  );
+}
+
+function shouldProtectFile(filePath) {
+  const job = findJobByOutputPath(filePath);
+  return job && isBeingDownloaded(job.id);
+}
+
+function isFileEligibleForCleanup(filePath, fileAge, retentionTime) {
+  // Archivo no es lo suficientemente viejo
+  if (fileAge <= retentionTime) {
+    return false;
+  }
+
+  // Archivo está asociado a un job
+  const hasJob = isFileAssociatedWithJob(filePath);
+  if (hasJob) {
+    // Proteger si está siendo descargado
+    if (shouldProtectFile(filePath)) {
+      logger.info(`Skipping cleanup of ${filePath} - actively downloading`);
+      return false;
+    }
+    // Si tiene job pero no se está descargando, no limpiar aún
+    return false;
+  }
+
+  // Es un archivo huérfano y es viejo, puede limpiarse
+  return true;
+}
+
+async function safeDeleteFile(filePath) {
   try {
-    const now = Date.now();
-    logger.info('Starting cleanup process...');
-
-    const tempCleaned = await cleanupTempFiles(now);
-    const orphansCleaned = await cleanupOrphanFiles(now);
-    const jobsCleaned = await cleanupOldJobs(now);
-
-    if (tempCleaned > 0) logger.info(`Cleaned ${tempCleaned} temp files`);
-    if (orphansCleaned > 0) logger.info(`Cleaned ${orphansCleaned} orphan files`);
-    if (jobsCleaned > 0) logger.info(`Cleaned ${jobsCleaned} old jobs`);
-
-    logger.info('Cleanup process completed');
-  } catch (error) {
-    logger.error('Cleanup error:', error);
+    await fs.unlink(filePath);
+    logger.info(`✓ Cleaned orphan file: ${filePath}`);
+    return true;
+  } catch (err) {
+    logger.error(`Failed to delete file ${filePath}:`, err);
+    return false;
   }
-};
+}
 
-async function cleanupTempFiles(now) {
-  const tempFiles = await fs.readdir(dirs.temp);
-  let cleaned = 0;
+async function processFileForCleanup(dirPath, fileName, now, retentionTime) {
+  try {
+    const filePath = path.join(dirPath, fileName);
+    const stats = await fs.stat(filePath);
+    const fileAge = now - stats.mtimeMs;
 
-  for (const file of tempFiles) {
-    try {
-      const filePath = path.join(dirs.temp, file);
-      const stats = await fs.stat(filePath);
-      if (now - stats.mtimeMs > cleanupConfig.tempFileRetention) {
-        await fs.unlink(filePath);
-        cleaned++;
-      }
-    } catch { }
+    if (isFileEligibleForCleanup(filePath, fileAge, retentionTime)) {
+      const deleted = await safeDeleteFile(filePath);
+      return deleted ? 1 : 0;
+    }
+
+    return 0;
+  } catch (err) {
+    logger.error(`Error processing file ${fileName}:`, err);
+    return 0;
   }
-  return cleaned;
+}
+
+async function cleanupDirectoryOrphans(dirPath, now, retentionTime) {
+  try {
+    const files = await fs.readdir(dirPath);
+    let cleaned = 0;
+
+    for (const file of files) {
+      const result = await processFileForCleanup(dirPath, file, now, retentionTime);
+      cleaned += result;
+    }
+
+    return cleaned;
+  } catch (err) {
+    logger.error(`Error reading directory ${dirPath}:`, err);
+    return 0;
+  }
 }
 
 async function cleanupOrphanFiles(now) {
-  let cleaned = 0;
-  for (const dir of [dirs.uploads, dirs.outputs]) {
-    const files = await fs.readdir(dir);
-    for (const file of files) {
-      try {
-        const filePath = path.join(dir, file);
-        const stats = await fs.stat(filePath);
-        if (now - stats.mtimeMs > 3600000) {
-          const hasJob = Array.from(jobManager.jobs.values()).some(
-            job => job.inputPath === filePath || job.outputPath === filePath
-          );
-          if (!hasJob) {
-            await fs.unlink(filePath);
-            cleaned++;
-          }
-        }
-      } catch { }
-    }
+  const directories = [dirs.uploads, dirs.outputs];
+  let totalCleaned = 0;
+
+  for (const dir of directories) {
+    const cleaned = await cleanupDirectoryOrphans(dir, now, config.fileRetentionTime);
+    totalCleaned += cleaned;
   }
-  return cleaned;
+
+  return totalCleaned;
+}
+
+// ===================== FUNCIONES AUXILIARES PARA LIMPIEZA DE JOBS =====================
+
+function isFailedJobEligible(job, now) {
+  return job.status === 'failed' &&
+    (now - job.createdAt) > cleanupConfig.failedJobRetention;
+}
+
+function isDownloadedJobEligible(tracking, now) {
+  if (!tracking?.fullyDownloaded || !tracking?.lastDownloadedAt) {
+    return false;
+  }
+  return (now - tracking.lastDownloadedAt) > cleanupConfig.completedJobRetention;
+}
+
+function isUndownloadedJobEligible(job, now) {
+  const retentionTime = cleanupConfig.completedJobRetention * 4;
+  const jobTime = job.completedAt || job.createdAt;
+  return (now - jobTime) > retentionTime;
+}
+
+function isCompletedJobEligible(job, now) {
+  if (job.status !== 'completed') {
+    return false;
+  }
+
+  const tracking = downloadTracker.get(job.id);
+
+  if (isDownloadedJobEligible(tracking, now)) {
+    return true;
+  }
+
+  if (isUndownloadedJobEligible(job, now)) {
+    return true;
+  }
+
+  return false;
+}
+
+function isJobEligibleForCleanup(job, now) {
+  // Job siendo descargado nunca es elegible
+  if (isBeingDownloaded(job.id)) {
+    logger.info(`Skipping cleanup of job ${job.id} - actively downloading`);
+    return false;
+  }
+
+  // Verificar si es un job fallido viejo
+  if (isFailedJobEligible(job, now)) {
+    return true;
+  }
+
+  // Verificar si es un job completado viejo
+  if (isCompletedJobEligible(job, now)) {
+    return true;
+  }
+
+  return false;
+}
+
+async function deleteFileIfExists(filePath, description) {
+  if (!filePath || !fsSync.existsSync(filePath)) {
+    return false;
+  }
+
+  try {
+    await fs.unlink(filePath);
+    logger.info(`✓ Deleted ${description}: ${filePath}`);
+    return true;
+  } catch (err) {
+    logger.error(`Failed to delete ${description} ${filePath}:`, err);
+    return false;
+  }
+}
+
+async function cleanupJobFiles(job) {
+  await deleteFileIfExists(job.inputPath, 'input file of old job');
+  await deleteFileIfExists(job.outputPath, 'output file of old job');
+}
+
+async function cleanupJobRecords(jobId) {
+  try {
+    jobManager.deleteJob(jobId);
+    await redis.del(`job:${jobId}`);
+    downloadTracker.delete(jobId);
+    return true;
+  } catch (err) {
+    logger.error(`Failed to cleanup job records for ${jobId}:`, err);
+    return false;
+  }
+}
+
+async function processJobForCleanup(job, now) {
+  if (!isJobEligibleForCleanup(job, now)) {
+    return false;
+  }
+
+  try {
+    await cleanupJobFiles(job);
+    const success = await cleanupJobRecords(job.id);
+
+    if (success) {
+      logger.info(`✓ Cleaned up old job ${job.id} (status: ${job.status})`);
+      return true;
+    }
+
+    return false;
+  } catch (err) {
+    logger.error(`Error cleaning job ${job.id}:`, err);
+    return false;
+  }
 }
 
 async function cleanupOldJobs(now) {
@@ -2332,27 +2811,201 @@ async function cleanupOldJobs(now) {
   let cleaned = 0;
 
   for (const job of jobs) {
-    const isFailedOld = job.status === 'failed' && now - job.createdAt > cleanupConfig.failedJobRetention;
-    const isCompletedOld = job.status === 'completed' && now - (job.completedAt || job.createdAt) > cleanupConfig.completedJobRetention;
-    if (!isFailedOld && !isCompletedOld) continue;
-
-    try {
-      if (job.inputPath && fsSync.existsSync(job.inputPath)) await fs.unlink(job.inputPath);
-      if (job.outputPath && fsSync.existsSync(job.outputPath)) await fs.unlink(job.outputPath);
-
-      jobManager.deleteJob(job.id);
-      await redis.del(`job:${job.id}`);
-      downloadTracker.delete(job.id);
+    const wasCleanedUp = await processJobForCleanup(job, now);
+    if (wasCleanedUp) {
       cleaned++;
-    } catch (err) {
-      logger.error(`Error cleaning job ${job.id}:`, err);
     }
   }
+
   return cleaned;
 }
 
-// Ejecutar limpieza periódica
-setInterval(cleanup, config.cleanupInterval);
+// ===================== LIMPIEZA AL DESCONECTAR =====================
+
+// Cancelar y detener un job en ejecución
+async function cancelJob(jobId) {
+  const job = jobManager.getJob(jobId);
+  if (!job) return false;
+
+  logger.info(`Cancelling job ${jobId} (status: ${job.status})`);
+
+  try {
+    // Detener proceso FFmpeg si está activo
+    const ffmpegCommand = activeFFmpegProcesses.get(jobId);
+    if (ffmpegCommand && typeof ffmpegCommand.cancel === 'function') {
+      logger.info(`Killing FFmpeg process for job ${jobId}`);
+      ffmpegCommand.cancel();
+      activeFFmpegProcesses.delete(jobId);
+    }
+
+    // Cancelar job en Bull queue
+    const bullJobId = jobManager.getBullJobId(jobId);
+    if (bullJobId) {
+      try {
+        const bullJob = await videoQueue.getJob(bullJobId);
+        if (bullJob) {
+          await bullJob.remove();
+          logger.info(`Removed Bull job ${bullJobId}`);
+        }
+      } catch (bullError) {
+        logger.warn(`Could not remove Bull job ${bullJobId}:`, bullError.message);
+      }
+    }
+
+    // Actualizar estado
+    await redis.hset(`job:${jobId}`, {
+      status: 'cancelled',
+      cancelledAt: Date.now(),
+      progress: 0
+    });
+
+    jobManager.updateJob(jobId, {
+      status: 'cancelled',
+      cancelledAt: Date.now()
+    });
+
+    return true;
+  } catch (error) {
+    logger.error(`Error cancelling job ${jobId}:`, error);
+    return false;
+  }
+}
+
+// Eliminar archivos de un job
+async function deleteJobFiles(job) {
+  let deletedCount = 0;
+
+  // Eliminar archivo de entrada
+  if (job.inputPath && fsSync.existsSync(job.inputPath)) {
+    try {
+      await fs.unlink(job.inputPath);
+      logger.info(`✓ Deleted input file: ${job.inputPath}`);
+      deletedCount++;
+    } catch (err) {
+      logger.error(`Failed to delete input file ${job.inputPath}:`, err);
+    }
+  }
+
+  // Eliminar archivo de salida
+  if (job.outputPath && fsSync.existsSync(job.outputPath)) {
+    try {
+      await fs.unlink(job.outputPath);
+      logger.info(`✓ Deleted output file: ${job.outputPath}`);
+      deletedCount++;
+    } catch (err) {
+      logger.error(`Failed to delete output file ${job.outputPath}:`, err);
+    }
+  }
+
+  return deletedCount;
+}
+
+// Limpiar todos los datos de un job
+async function cleanupJobCompletely(jobId) {
+  const job = jobManager.getJob(jobId);
+  if (!job) {
+    logger.warn(`Job ${jobId} not found for cleanup`);
+    return false;
+  }
+
+  try {
+    // Eliminar archivos físicos
+    await deleteJobFiles(job);
+
+    // Eliminar de Redis
+    await redis.del(`job:${jobId}`);
+
+    // Eliminar de jobManager
+    jobManager.deleteJob(jobId);
+
+    // Limpiar tracking de descargas
+    downloadTracker.delete(jobId);
+
+    logger.info(`✓ Completely cleaned up job ${jobId}`);
+    return true;
+  } catch (error) {
+    logger.error(`Error cleaning up job ${jobId}:`, error);
+    return false;
+  }
+}
+
+// Limpiar todos los jobs de un usuario
+async function cleanupUserJobs(userId) {
+  const jobs = getUserJobs(userId);
+  
+  if (jobs.length === 0) {
+    logger.info(`No jobs to clean for user ${userId}`);
+    return { cancelled: 0, deleted: 0, total: 0 };
+  }
+
+  logger.info(`Cleaning up ${jobs.length} jobs for disconnected user ${userId}`);
+
+  let cancelled = 0;
+  let deleted = 0;
+
+  for (const jobId of jobs) {
+    const job = jobManager.getJob(jobId);
+    if (!job) continue;
+
+    // Cancelar si está en cola o procesándose
+    if (job.status === 'queued' || job.status === 'processing') {
+      const wasCancelled = await cancelJob(jobId);
+      if (wasCancelled) cancelled++;
+    }
+
+    // Esperar un momento para que FFmpeg termine de liberar archivos
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Eliminar completamente el job
+    const wasDeleted = await cleanupJobCompletely(jobId);
+    if (wasDeleted) deleted++;
+  }
+
+  // Limpiar asociación de jobs del usuario
+  userJobs.delete(userId);
+
+  logger.info(`User ${userId} cleanup: ${cancelled} cancelled, ${deleted} deleted (total: ${jobs.length})`);
+  
+  return { cancelled, deleted, total: jobs.length };
+}
+
+// ===================== LIMPIEZA =====================
+
+const cleanup = async () => {
+  try {
+    const now = Date.now();
+    logger.info('Starting periodic cleanup...');
+
+    // Solo limpiar archivos muy antiguos (1 horas) que no tengan job asociado
+    const files = await fs.readdir(dirs.uploads);
+    let cleaned = 0;
+
+    for (const file of files) {
+      const filePath = path.join(dirs.uploads, file);
+      try {
+        const stats = await fs.stat(filePath);
+        const age = now - stats.mtimeMs;
+        
+        if (age > 3600000 && !isFileAssociatedWithJob(filePath)) {
+          await fs.unlink(filePath);
+          logger.info(`Cleaned old orphan file: ${file}`);
+          cleaned++;
+        }
+      } catch (err) {
+        logger.warn(`Error while cleaning file ${filePath}:`, err);
+      }
+    }
+
+    if (cleaned > 0) {
+      logger.info(`Periodic cleanup: removed ${cleaned} old orphan files`);
+    }
+
+  } catch (error) {
+    logger.error('Cleanup error:', error);
+  }
+};
+
+setInterval(cleanup, 60000);
 cleanup();
 
 // ===================== MANEJO DE ERRORES =====================

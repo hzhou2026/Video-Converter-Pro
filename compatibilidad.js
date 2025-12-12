@@ -27,7 +27,7 @@ const PRESET_FORMAT_COMPATIBILITY = {
   
   // Otros formatos específicos
   'gif-animated': ['gif'],
-  'hls-streaming': ['hls', 'm3u8'],
+  'hls-streaming': ['hls'],
   
   // H.264
   'h264-ultra': ['mp4', 'mkv', 'mov', 'avi'],
@@ -62,16 +62,16 @@ const PRESET_FORMAT_COMPATIBILITY = {
 // Códecs compatibles por formato
 const FORMAT_CODEC_COMPATIBILITY = {
   'mp4': {
-    video: ['libx264', 'libx265', 'h264', 'hevc', 'mpeg4', 'libaom-av1'],
-    audio: ['aac', 'mp3', 'ac3', 'opus']
+    video: ['libx264', 'libx265', 'mpeg4', 'libaom-av1'],
+    audio: ['aac', 'mp3', 'ac3', 'libopus']
   },
   'mkv': {
     video: ['libx264', 'libx265', 'libvpx-vp9', 'libaom-av1', 'mpeg4', 'ffv1'],
-    audio: ['aac', 'mp3', 'opus', 'vorbis', 'flac', 'pcm_s16le', 'ac3']
+    audio: ['aac', 'mp3', 'libopus', 'libvorbis', 'flac', 'pcm_s16le', 'ac3']
   },
   'webm': {
     video: ['libvpx', 'libvpx-vp9', 'libaom-av1'],
-    audio: ['libopus', 'libvorbis', 'opus', 'vorbis']
+    audio: ['libopus', 'libvorbis']
   },
   'avi': {
     video: ['rawvideo', 'huffyuv', 'ffv1', 'utvideo', 'dvvideo', 'mjpeg', 'mpeg4', 'libx264'],
@@ -88,6 +88,10 @@ const FORMAT_CODEC_COMPATIBILITY = {
   '3gp': {
     video: ['libx264', 'mpeg4', 'h263'],
     audio: ['aac', 'amr_nb']
+  },
+  'hls': {
+    video: ['libx264', 'libx265'],
+    audio: ['aac', 'mp3']
   }
 };
 
@@ -192,19 +196,19 @@ function validateConversionCompatibility(preset, format, presetConfig) {
     }
     
     if (presetConfig.audioCodec && 
-        !['libopus', 'libvorbis', 'opus', 'vorbis'].includes(presetConfig.audioCodec)) {
+        !['libopus', 'libvorbis'].includes(presetConfig.audioCodec)) {
       return {
         valid: false,
-        message: `WebM requiere códec de audio Opus o Vorbis. "${presetConfig.audioCodec}" no es compatible.`
+        message: `WebM requiere códec de audio Opus (libopus) o Vorbis (libvorbis). "${presetConfig.audioCodec}" no es compatible.`
       };
     }
   }
   
   // GIF no puede tener audio
-  if (format === 'gif' && presetConfig.audioCodec && !presetConfig.removeAudio) {
+  if (format === 'gif' && presetConfig.audioCodec) {
     return {
       valid: false,
-      message: 'GIF no soporta audio. Usa la opción "removeAudio" o elige otro formato.'
+      message: 'GIF no soporta audio. El audio será removido automáticamente o elige otro formato.'
     };
   }
   
@@ -245,7 +249,8 @@ const FORMAT_MAPPINGS = {
   '3gp': '3gp',
   'flv': 'flv',
   'wmv': 'asf',
-  'm4v': 'mp4'
+  'm4v': 'mp4',
+  'hls': 'hls'
 };
 
 // Función mejorada para aplicar formato de salida
@@ -289,6 +294,11 @@ function applyOutputFormat(command, preset, format, presetConfig) {
         command.outputOptions(['-movflags', '+faststart']);
       }
       break;
+      
+    case 'gif':
+      // GIF no soporta audio, removerlo automáticamente
+      command.noAudio();
+      break;
   }
   
   return resolvedFormat;
@@ -296,12 +306,9 @@ function applyOutputFormat(command, preset, format, presetConfig) {
 
 // Exportar funciones y constantes
 module.exports = {
-  validatePresetFormatCompatibility,
-  validateCodecFormatCompatibility,
   validateConversionCompatibility,
   resolveOutputFormat,
   applyOutputFormat,
   PRESET_FORMAT_COMPATIBILITY,
   FORMAT_CODEC_COMPATIBILITY,
-  FORMAT_MAPPINGS
 };
