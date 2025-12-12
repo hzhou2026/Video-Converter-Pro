@@ -5,6 +5,16 @@ const BASE_URL = isDevelopment
   ? 'http://localhost:3000'
   : '';
 
+// Gestión de userId persistente
+const getUserId = () => {
+  let userId = localStorage.getItem('userId');
+  if (!userId) {
+    userId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    localStorage.setItem('userId', userId);
+  }
+  return userId;
+};
+
 const handleResponse = async (response) => {
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
@@ -21,6 +31,7 @@ const request = async (endpoint, options = {}) => {
     const response = await fetch(url, {
       headers: {
         'Content-Type': 'application/json',
+        'x-user-id': getUserId(), // Siempre incluir userId
         ...options.headers
       },
       ...options
@@ -33,22 +44,34 @@ const request = async (endpoint, options = {}) => {
 };
 
 export const api = {
+  // Obtener todos los presets disponibles
   fetchPresets: () => request('/api/presets'),
   
+  // Obtener todos los formatos soportados por FFmpeg
   fetchFormats: () => request('/api/formats'),
   
+  // Obtener todos los códecs soportados
+  fetchCodecs: () => request('/api/codecs'),
+  
+  // Obtener todos los jobs del usuario actual
   fetchJobs: () => request('/api/jobs'),
   
+  // Verificar salud del sistema
   fetchSystemHealth: () => request('/api/health'),
   
+  // Obtener estado de un job específico
   fetchJob: (jobId) => request(`/api/job/${jobId}`),
   
+  // Crear un nuevo job de conversión
   createJob: async (formData) => {
     try {
       console.log('Sending conversion request...');
       const url = `${BASE_URL}/api/convert`;
       const response = await fetch(url, {
         method: 'POST',
+        headers: {
+          'x-user-id': getUserId() // Incluir userId en el header
+        },
         body: formData
       });
       const data = await handleResponse(response);
@@ -60,14 +83,20 @@ export const api = {
     }
   },
   
+  // Cancelar un job
   cancelJob: (jobId) => request(`/api/job/${jobId}`, {
     method: 'DELETE'
   }),
   
+  // Descargar archivo convertido
   downloadJob: async (jobId) => {
     try {
       const url = `${BASE_URL}/api/download/${jobId}`;
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        headers: {
+          'x-user-id': getUserId()
+        }
+      });
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
@@ -78,6 +107,7 @@ export const api = {
     }
   },
   
+  // Analizar archivo multimedia
   analyzeFile: async (file) => {
     try {
       const formData = new FormData();
@@ -85,6 +115,9 @@ export const api = {
       const url = `${BASE_URL}/api/analyze`;
       const response = await fetch(url, {
         method: 'POST',
+        headers: {
+          'x-user-id': getUserId()
+        },
         body: formData
       });
       return handleResponse(response);
@@ -94,24 +127,18 @@ export const api = {
     }
   },
   
-  fetchMetrics: () => request('/api/metrics'),
-  
-  cleanupJobs: () => request('/api/jobs/cleanup', {
-    method: 'POST'
-  }),
-  
-  // Valida la compatibilidad entre preset y formato antes de convertir
+  // Validar compatibilidad preset-formato
   validateConversion: async (preset, format) => {
     try {
       const response = await fetch(`${BASE_URL}/api/validate-conversion`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'x-user-id': getUserId()
         },
         body: JSON.stringify({ preset, format })
       });
       
-      // Siempre devolver el JSON, incluso si hay error
       const data = await response.json();
       
       return {
@@ -125,7 +152,7 @@ export const api = {
     }
   },
 
-  // Obtiene los formatos compatibles para un preset específico
+  // Obtener formatos compatibles para un preset
   getPresetFormats: async (preset) => {
     try {
       return await request(`/api/preset/${preset}/formats`);
@@ -135,7 +162,7 @@ export const api = {
     }
   },
 
-  // Obtiene los códecs compatibles para un formato específico
+  // Obtener códecs compatibles para un formato
   getFormatCodecs: async (format) => {
     try {
       return await request(`/api/format/${format}/codecs`);
@@ -143,5 +170,18 @@ export const api = {
       console.error('API Error (getFormatCodecs):', error);
       throw error;
     }
-  }
+  },
+
+  // Obtener estado de usuario y sus jobs
+  getUserStatus: async (userId) => {
+    try {
+      return await request(`/api/user/${userId || getUserId()}/status`);
+    } catch (error) {
+      console.error('API Error (getUserStatus):', error);
+      throw error;
+    }
+  },
+
+  // Obtener el userId actual
+  getCurrentUserId: getUserId
 };

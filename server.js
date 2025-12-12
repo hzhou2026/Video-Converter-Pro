@@ -119,12 +119,12 @@ const userJobs = new Map();
 // Asociar un socket con un usuario
 function associateSocketWithUser(socketId, userId) {
   socketToUser.set(socketId, userId);
-  
+
   if (!userToSockets.has(userId)) {
     userToSockets.set(userId, new Set());
   }
   userToSockets.get(userId).add(socketId);
-  
+
   logger.info(`Socket ${socketId} associated with user ${userId}`);
 }
 
@@ -132,9 +132,9 @@ function associateSocketWithUser(socketId, userId) {
 function disassociateSocket(socketId) {
   const userId = socketToUser.get(socketId);
   if (!userId) return null;
-  
+
   socketToUser.delete(socketId);
-  
+
   const userSockets = userToSockets.get(userId);
   if (userSockets) {
     userSockets.delete(socketId);
@@ -144,7 +144,7 @@ function disassociateSocket(socketId) {
       return userId; // Usuario completamente desconectado
     }
   }
-  
+
   return null; // Usuario aún tiene otras conexiones
 }
 
@@ -2087,7 +2087,7 @@ app.post('/api/convert', upload.single('file'), async (req, res) => {
 
     // Obtener userId (desde header o generar uno temporal)
     const userId = req.headers['x-user-id'] || `temp-${uuidv4()}`;
-    
+
     const { job, outputFilename } = await createConversionJob(
       req.file,
       resolvedFormat,
@@ -2172,6 +2172,8 @@ app.post('/api/batch-convert', upload.array('videos', 10), async (req, res) => {
 // Validar configuración de conversión
 app.post('/api/validate-conversion', (req, res) => {
   try {
+    const { preset, format } = req.body;
+
     const allowedPresets = Object.keys(PRESETS);
     if (!allowedPresets.includes(preset)) {
       throw new Error('Invalid preset');
@@ -2488,7 +2490,7 @@ app.get('/api/format/:format/codecs', (req, res) => {
 // Obtener estado de usuario y sus jobs
 app.get('/api/user/:userId/status', (req, res) => {
   const userId = req.params.userId;
-  
+
   const jobs = getUserJobs(userId);
   const connected = isUserConnected(userId);
   const activeSockets = userToSockets.get(userId)?.size || 0;
@@ -2565,14 +2567,14 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', async () => {
     logger.info(`Client disconnected: ${socket.id}`);
-    
+
     // Verificar si el usuario está completamente desconectado
     const disconnectedUserId = disassociateSocket(socket.id);
-    
+
     if (disconnectedUserId) {
       // Usuario completamente desconectado - iniciar limpieza
       logger.info(`User ${disconnectedUserId} fully disconnected, starting cleanup...`);
-      
+
       // Pequeño delay por si el usuario se reconecta inmediatamente
       setTimeout(async () => {
         // Verificar de nuevo si el usuario sigue desconectado
@@ -2589,7 +2591,7 @@ io.on('connection', (socket) => {
   // Nuevo evento: limpieza manual
   socket.on('cleanup-my-jobs', async (userId) => {
     if (!userId) return;
-    
+
     logger.info(`Manual cleanup requested by user ${userId}`);
     const stats = await cleanupUserJobs(userId);
     socket.emit('cleanup-completed', stats);
@@ -2932,7 +2934,7 @@ async function cleanupJobCompletely(jobId) {
 // Limpiar todos los jobs de un usuario
 async function cleanupUserJobs(userId) {
   const jobs = getUserJobs(userId);
-  
+
   if (jobs.length === 0) {
     logger.info(`No jobs to clean for user ${userId}`);
     return { cancelled: 0, deleted: 0, total: 0 };
@@ -2965,7 +2967,7 @@ async function cleanupUserJobs(userId) {
   userJobs.delete(userId);
 
   logger.info(`User ${userId} cleanup: ${cancelled} cancelled, ${deleted} deleted (total: ${jobs.length})`);
-  
+
   return { cancelled, deleted, total: jobs.length };
 }
 
@@ -2985,7 +2987,7 @@ const cleanup = async () => {
       try {
         const stats = await fs.stat(filePath);
         const age = now - stats.mtimeMs;
-        
+
         if (age > 3600000 && !isFileAssociatedWithJob(filePath)) {
           await fs.unlink(filePath);
           logger.info(`Cleaned old orphan file: ${file}`);
