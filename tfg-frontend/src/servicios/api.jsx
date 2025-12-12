@@ -98,5 +98,50 @@ export const api = {
   
   cleanupJobs: () => request('/api/jobs/cleanup', {
     method: 'POST'
-  })
+  }),
+  
+  // Valida la compatibilidad entre preset y formato antes de convertir
+  validateConversion: async (preset, format) => {
+    try {
+      const response = await fetch(`${BASE_URL}/api/validate-conversion`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ preset, format })
+      });
+      
+      // Siempre devolver el JSON, incluso si hay error
+      const data = await response.json();
+      
+      return {
+        ok: response.ok,
+        status: response.status,
+        ...data
+      };
+    } catch (error) {
+      console.error('API Error (validateConversion):', error);
+      throw error;
+    }
+  },
+
+  // Obtiene los formatos compatibles para un preset específico
+  getPresetFormats: async (preset) => {
+    try {
+      return await request(`/api/preset/${preset}/formats`);
+    } catch (error) {
+      console.error('API Error (getPresetFormats):', error);
+      throw error;
+    }
+  },
+
+  // Obtiene los códecs compatibles para un formato específico
+  getFormatCodecs: async (format) => {
+    try {
+      return await request(`/api/format/${format}/codecs`);
+    } catch (error) {
+      console.error('API Error (getFormatCodecs):', error);
+      throw error;
+    }
+  }
 };

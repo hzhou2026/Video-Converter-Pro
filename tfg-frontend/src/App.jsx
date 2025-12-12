@@ -91,6 +91,11 @@ function App() {
       socket.emit('subscribe', newJob.id);
     }
 
+    // Mostrar notificación si el formato fue ajustado
+    if (response.formatAdjusted) {
+      console.info('ℹ️ Formato ajustado:', response.message);
+    }
+
     setActiveTab('jobs');
   }, [socket]);
 
