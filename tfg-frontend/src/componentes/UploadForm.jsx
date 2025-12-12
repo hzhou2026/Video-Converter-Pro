@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import { api } from '../servicios/api';
 
@@ -33,7 +33,7 @@ const BASE_RESOLUTIONS = [
   { value: '640x360', label: '360p' }
 ];
 
-const FORMATS = ['mp4', 'webm', 'avi', 'mov', 'mkv'];
+const FORMATS = ['mp4', 'webm', 'avi', 'mov', 'mkv', 'gif'];
 
 const CHECKBOX_OPTIONS = [
   { key: 'removeAudio', label: 'Eliminar Audio' },
@@ -79,6 +79,10 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
   const [isDragOver, setIsDragOver] = useState(false);
   const [analysisResults, setAnalysisResults] = useState(null);
   const [uploadError, setUploadError] = useState(null);
+  const [validationStatus, setValidationStatus] = useState(null);
+  const [compatibleFormats, setCompatibleFormats] = useState(null);
+  const [isValidating, setIsValidating] = useState(false);
+  
   const fileInputRef = useRef(null);
 
   // Generar opciones de resolución dinámicamente
@@ -91,6 +95,62 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
     },
     ...BASE_RESOLUTIONS
   ];
+
+  // VALIDACIÓN EN TIEMPO REAL
+  useEffect(() => {
+    const validateConfiguration = async () => {
+      if (!selectedPreset || !customOptions.format) return;
+
+      setIsValidating(true);
+      
+      try {
+        // Validar compatibilidad
+        const validation = await api.validateConversion(
+          selectedPreset, 
+          customOptions.format
+        );
+
+        setValidationStatus(validation);
+
+        // Si no es válido, obtener formatos compatibles
+        if (!validation.ok && validation.suggestedFormats) {
+          setCompatibleFormats(validation.suggestedFormats);
+        } else {
+          setCompatibleFormats(null);
+        }
+
+      } catch (error) {
+        console.error('Error validating configuration:', error);
+        setValidationStatus(null);
+      } finally {
+        setIsValidating(false);
+      }
+    };
+
+    validateConfiguration();
+  }, [selectedPreset, customOptions.format]);
+
+  // Cargar formatos compatibles al cambiar preset
+  useEffect(() => {
+    const loadCompatibleFormats = async () => {
+      if (!selectedPreset) return;
+
+      try {
+        const formatInfo = await api.getPresetFormats(selectedPreset);
+        
+        // Si el preset tiene formatos específicos, actualizar la lista
+        if (!formatInfo.flexible && formatInfo.compatibleFormats) {
+          setCompatibleFormats(formatInfo.compatibleFormats);
+        } else {
+          setCompatibleFormats(null);
+        }
+      } catch (error) {
+        console.error('Error loading compatible formats:', error);
+      }
+    };
+
+    loadCompatibleFormats();
+  }, [selectedPreset]);
 
   const handleFileSelect = async (file) => {
     if (!isVideoFile(file)) {
@@ -132,6 +192,8 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
     setFileInfo(null);
     setAnalysisResults(null);
     setUploadError(null);
+    setValidationStatus(null);
+    setCompatibleFormats(null);
     setCustomOptions(DEFAULT_OPTIONS);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -141,6 +203,14 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
     
     if (!selectedFile) {
       setUploadError('Por favor selecciona un archivo');
+      return;
+    }
+
+    // VALIDACIÓN FINAL ANTES DE ENVIAR
+    if (validationStatus && !validationStatus.ok) {
+      setUploadError(
+        `Configuración incompatible: ${validationStatus.message || validationStatus.error}`
+      );
       return;
     }
 
@@ -165,10 +235,16 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || 'Error al subir el archivo');
+        throw new Error(errorData.error || errorData.message || 'Error al subir el archivo');
       }
 
       const data = await response.json();
+      
+      // Mostrar mensaje si el formato fue ajustado
+      if (data.formatAdjusted) {
+        console.log('⚠️ Formato ajustado:', data.message);
+      }
+      
       onJobCreated(data);
       resetForm();
     } catch (error) {
@@ -185,6 +261,12 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
 
   const applySuggestion = (preset) => {
     setSelectedPreset(preset);
+  };
+
+  // Función para aplicar formato compatible automáticamente
+  const applyCompatibleFormat = (format) => {
+    updateOption('format', format);
+    setValidationStatus(null);
   };
 
   return (
@@ -248,6 +330,80 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
           )}
         </button>
 
+        {/* Alerta de validación */}
+        {validationStatus && !validationStatus.ok && (
+          <div style={{
+            marginTop: '16px',
+            padding: '12px 16px',
+            background: '#fff3cd',
+            border: '1px solid #ffc107',
+            borderRadius: '8px',
+            color: '#856404',
+            fontSize: '14px'
+          }}
+          role="alert"
+          >
+            <div style={{ display: 'flex', alignItems: 'start', gap: '8px' }}>
+              <span style={{ fontSize: '18px' }}>⚠️</span>
+              <div style={{ flex: 1 }}>
+                <strong>Incompatibilidad detectada:</strong>
+                <p style={{ margin: '4px 0 8px 0' }}>
+                  {validationStatus.message || validationStatus.error}
+                </p>
+                
+                {validationStatus.suggestedFormats && validationStatus.suggestedFormats.length > 0 && (
+                  <div>
+                    <strong>Formatos compatibles:</strong>
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
+                      {validationStatus.suggestedFormats.map(fmt => (
+                        <button
+                          key={fmt}
+                          onClick={() => applyCompatibleFormat(fmt)}
+                          style={{
+                            padding: '6px 12px',
+                            background: '#fff',
+                            border: '1px solid #ffc107',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '13px',
+                            fontWeight: '500',
+                            color: '#856404'
+                          }}
+                          type="button"
+                        >
+                          {fmt.toUpperCase()}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Validación correcta*/}
+        {validationStatus && validationStatus.ok && validationStatus.willAutoAdjust && (
+          <div style={{
+            marginTop: '16px',
+            padding: '12px 16px',
+            background: '#d1ecf1',
+            border: '1px solid #17a2b8',
+            borderRadius: '8px',
+            color: '#0c5460',
+            fontSize: '14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}>
+            <span>ℹ️</span>
+            <span>
+              El formato se ajustará automáticamente de <strong>{customOptions.format}</strong> a{' '}
+              <strong>{validationStatus.resolvedFormat}</strong> para compatibilidad con el preset seleccionado.
+            </span>
+          </div>
+        )}
+
         {/* Error de subida */}
         {uploadError && (
           <div style={{
@@ -271,9 +427,9 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
         {analysisResults?.suggestions && analysisResults.suggestions.length > 0 && (
           <div className="analysis-suggestions">
             <h3>💡 Recomendaciones de Optimización</h3>
-            {analysisResults.suggestions.map((suggestion) => (
+            {analysisResults.suggestions.map((suggestion, index) => (
               <div 
-                key={`${suggestion.type}-${suggestion.message}-${suggestion.preset || ''}`} 
+                key={`${suggestion.type}-${index}`} 
                 className="suggestion-item"
               >
                 <span className="suggestion-type">{suggestion.type}</span>
@@ -331,11 +487,17 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
               <h3>Opciones Personalizadas</h3>
               
               <div className="option-group">
-                <label htmlFor="format-select">Formato de Salida:</label>
+                <label htmlFor="format-select">
+                  Formato de Salida:
+                  {isValidating && <span style={{ marginLeft: '8px', fontSize: '12px' }}>⏳</span>}
+                </label>
                 <select 
                   id="format-select"
                   value={customOptions.format}
                   onChange={(e) => updateOption('format', e.target.value)}
+                  style={{
+                    borderColor: validationStatus && !validationStatus.ok ? '#f44336' : undefined
+                  }}
                 >
                   {FORMATS.map(fmt => (
                     <option key={fmt} value={fmt}>
@@ -343,6 +505,13 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
                     </option>
                   ))}
                 </select>
+                
+                {/* Indicador de formatos compatibles */}
+                {compatibleFormats && compatibleFormats.length > 0 && (
+                  <p style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
+                    ℹ️ Este preset solo acepta: {compatibleFormats.join(', ').toUpperCase()}
+                  </p>
+                )}
               </div>
 
               <div className="option-group">
@@ -421,8 +590,15 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
           <div className="form-actions">
             <button 
               type="submit" 
-              disabled={!selectedFile || isUploading}
+              disabled={
+                !selectedFile || 
+                isUploading || 
+                (validationStatus && !validationStatus.ok)
+              }
               className="btn-convert"
+              style={{
+                opacity: (validationStatus && !validationStatus.ok) ? 0.5 : 1
+              }}
             >
               {isUploading ? '⏳ Procesando...' : '🚀 Iniciar Conversión'}
             </button>
@@ -450,4 +626,3 @@ UploadForm.propTypes = {
 };
 
 export default UploadForm;
-
