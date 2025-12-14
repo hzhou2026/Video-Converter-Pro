@@ -41,6 +41,4 @@ cache/
 thumbnails/
 
 # --- Pruebas ---
-video_test.mp4
-test.js
-test2.js
+backup.js
