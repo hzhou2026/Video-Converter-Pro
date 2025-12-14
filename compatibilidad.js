@@ -27,7 +27,6 @@ const PRESET_FORMAT_COMPATIBILITY = {
   
   // Otros formatos específicos
   'gif-animated': ['gif'],
-  'hls-streaming': ['hls'],
   
   // H.264
   'h264-ultra': ['mp4', 'mkv', 'mov', 'avi'],
@@ -48,7 +47,7 @@ const PRESET_FORMAT_COMPATIBILITY = {
   
   // Streaming & Web
   'web-streaming': ['mp4', 'mkv'],
-  'mobile-optimized': ['mp4', '3gp'],
+  'mobile-optimized': ['mp4'],
   
   // Redes Sociales
   'youtube-4k': ['mp4', 'mkv', 'mov'],
@@ -75,7 +74,7 @@ const FORMAT_CODEC_COMPATIBILITY = {
   },
   'avi': {
     video: ['rawvideo', 'huffyuv', 'ffv1', 'utvideo', 'dvvideo', 'mjpeg', 'mpeg4', 'libx264'],
-    audio: ['pcm_s16le', 'mp3', 'ac3']
+    audio: ['pcm_s16le', 'mp3', 'ac3',"aac"]
   },
   'mov': {
     video: ['libx264', 'libx265', 'prores_ks', 'mpeg4'],
@@ -85,14 +84,6 @@ const FORMAT_CODEC_COMPATIBILITY = {
     video: ['gif'],
     audio: []
   },
-  '3gp': {
-    video: ['libx264', 'mpeg4', 'h263'],
-    audio: ['aac', 'amr_nb']
-  },
-  'hls': {
-    video: ['libx264', 'libx265'],
-    audio: ['aac', 'mp3']
-  }
 };
 
 // Valida si un preset es compatible con un formato
@@ -246,11 +237,9 @@ const FORMAT_MAPPINGS = {
   'avi': 'avi',
   'mov': 'mov',
   'gif': 'gif',
-  '3gp': '3gp',
   'flv': 'flv',
   'wmv': 'asf',
   'm4v': 'mp4',
-  'hls': 'hls'
 };
 
 // Función mejorada para aplicar formato de salida
@@ -305,10 +294,11 @@ function applyOutputFormat(command, preset, format, presetConfig) {
 }
 
 // Exportar funciones y constantes
-module.exports = {
+export {
   validateConversionCompatibility,
   resolveOutputFormat,
   applyOutputFormat,
+  validateCodecFormatCompatibility,
   PRESET_FORMAT_COMPATIBILITY,
   FORMAT_CODEC_COMPATIBILITY,
 };
