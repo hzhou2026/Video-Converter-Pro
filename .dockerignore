@@ -22,7 +22,6 @@ logs/
 # Docker
 Dockerfile
 docker-compose.yml
-.dockerignore
 
 # IDE
 .vscode/

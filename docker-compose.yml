@@ -41,8 +41,7 @@ services:
       # Volúmenes persistentes para archivos
       - uploads:/app/uploads
       - outputs:/app/outputs
-      - temp:/app/temp
-      - cache:/app/cache
+      - ./compatibilidad.js:/app/compatibilidad.js:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -61,9 +60,9 @@ services:
       retries: 3
       start_period: 40s
 
-# ============================================
-# Frontend - React con Nginx
-# ============================================
+  # ============================================
+  # Frontend - React con Nginx
+  # ============================================
   frontend:
     build:
       context: ./tfg-frontend

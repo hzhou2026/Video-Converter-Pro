@@ -29,7 +29,7 @@ RUN addgroup -g 1001 -S nodejs && \
 
 # Crear directorios necesarios
 WORKDIR /app
-RUN mkdir -p uploads outputs temp cache && \
+RUN mkdir -p uploads outputs && \
     chown -R nodejs:nodejs /app
 
 # Copiar dependencias desde builder
@@ -37,6 +37,7 @@ COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
 
 # Copiar código de la aplicación
 COPY --chown=nodejs:nodejs server.js ./
+COPY --chown=nodejs:nodejs compatibilidad.js ./
 COPY --chown=nodejs:nodejs package*.json ./
 
 # Cambiar a usuario no-root
