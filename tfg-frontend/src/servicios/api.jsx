@@ -5,16 +5,6 @@ const BASE_URL = isDevelopment
   ? 'http://localhost:3000'
   : '';
 
-// Gestión de userId persistente
-const getUserId = () => {
-  let userId = localStorage.getItem('userId');
-  if (!userId) {
-    userId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-    localStorage.setItem('userId', userId);
-  }
-  return userId;
-};
-
 const handleResponse = async (response) => {
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
@@ -31,7 +21,6 @@ const request = async (endpoint, options = {}) => {
     const response = await fetch(url, {
       headers: {
         'Content-Type': 'application/json',
-        'x-user-id': getUserId(), // Siempre incluir userId
         ...options.headers
       },
       ...options
@@ -44,15 +33,12 @@ const request = async (endpoint, options = {}) => {
 };
 
 export const api = {
-  // Obtener todos los presets disponibles
+    // Obtener todos los presets disponibles
   fetchPresets: () => request('/api/presets'),
   
   // Obtener todos los formatos soportados por FFmpeg
   fetchFormats: () => request('/api/formats'),
-  
-  // Obtener todos los códecs soportados
-  fetchCodecs: () => request('/api/codecs'),
-  
+
   // Obtener todos los jobs del usuario actual
   fetchJobs: () => request('/api/jobs'),
   
@@ -69,9 +55,6 @@ export const api = {
       const url = `${BASE_URL}/api/convert`;
       const response = await fetch(url, {
         method: 'POST',
-        headers: {
-          'x-user-id': getUserId() // Incluir userId en el header
-        },
         body: formData
       });
       const data = await handleResponse(response);
@@ -92,11 +75,7 @@ export const api = {
   downloadJob: async (jobId) => {
     try {
       const url = `${BASE_URL}/api/download/${jobId}`;
-      const response = await fetch(url, {
-        headers: {
-          'x-user-id': getUserId()
-        }
-      });
+      const response = await fetch(url);
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
@@ -115,9 +94,6 @@ export const api = {
       const url = `${BASE_URL}/api/analyze`;
       const response = await fetch(url, {
         method: 'POST',
-        headers: {
-          'x-user-id': getUserId()
-        },
         body: formData
       });
       return handleResponse(response);
@@ -127,18 +103,24 @@ export const api = {
     }
   },
   
+  fetchMetrics: () => request('/api/metrics'),
+  
+  cleanupJobs: () => request('/api/jobs/cleanup', {
+    method: 'POST'
+  }),
+  
   // Validar compatibilidad preset-formato
   validateConversion: async (preset, format) => {
     try {
       const response = await fetch(`${BASE_URL}/api/validate-conversion`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'x-user-id': getUserId()
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({ preset, format })
       });
       
+      // Siempre devolver el JSON, incluso si hay error
       const data = await response.json();
       
       return {
@@ -170,18 +152,5 @@ export const api = {
       console.error('API Error (getFormatCodecs):', error);
       throw error;
     }
-  },
-
-  // Obtener estado de usuario y sus jobs
-  getUserStatus: async (userId) => {
-    try {
-      return await request(`/api/user/${userId || getUserId()}/status`);
-    } catch (error) {
-      console.error('API Error (getUserStatus):', error);
-      throw error;
-    }
-  },
-
-  // Obtener el userId actual
-  getCurrentUserId: getUserId
+  }
 };
