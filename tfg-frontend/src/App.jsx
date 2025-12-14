@@ -17,7 +17,6 @@ function App() {
   const [activeTab, setActiveTab] = useState('upload');
   const [presets, setPresets] = useState({});
   const [formats, setFormats] = useState([]);
-  const [systemHealth, setSystemHealth] = useState(null);
   const [downloadedJobs, setDownloadedJobs] = useState(new Set());
 
   // Cargar datos iniciales
