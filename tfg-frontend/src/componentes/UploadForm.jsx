@@ -5,10 +5,10 @@ import { api } from '../servicios/api';
 const VIDEO_TYPES = new Set([
   'video/mp4', 'video/avi', 'video/mov', 'video/mkv', 
   'video/webm', 'video/flv', 'video/wmv', 'video/m4v',
-  'video/3gp', 'video/ogv', 'video/x-msvideo', 'video/quicktime'
+  'video/ogv', 'video/x-msvideo', 'video/quicktime'
 ]);
 
-const VIDEO_EXTENSIONS = /\.(mp4|avi|mov|mkv|webm|flv|wmv|m4v|3gp|ogv|hevc|h265|mts|m2ts|ts|vob|mpg|mpeg)$/i;
+const VIDEO_EXTENSIONS = /\.(mp4|avi|mov|mkv|webm|flv|wmv|m4v|ogv|hevc|h265|mts|m2ts|ts|vob|mpg|mpeg)$/i;
 
 const DEFAULT_OPTIONS = {
   format: 'mp4',
@@ -70,7 +70,7 @@ const isVideoFile = (file) => {
   return VIDEO_TYPES.has(file.type) || VIDEO_EXTENSIONS.test(file.name);
 };
 
-const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userId }) => {
+const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => {
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileInfo, setFileInfo] = useState(null);
   const [selectedPreset, setSelectedPreset] = useState('h264-normal');
@@ -104,7 +104,6 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
       setIsValidating(true);
       
       try {
-        // Validar compatibilidad
         const validation = await api.validateConversion(
           selectedPreset, 
           customOptions.format
@@ -112,11 +111,12 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
 
         setValidationStatus(validation);
 
-        // Si no es válido, obtener formatos compatibles
+        // Si es válido, limpiar formatos compatibles; si no, obtener sugeridos
+        if (validation.ok) {
+          setCompatibleFormats(null);
+        }
         if (!validation.ok && validation.suggestedFormats) {
           setCompatibleFormats(validation.suggestedFormats);
-        } else {
-          setCompatibleFormats(null);
         }
 
       } catch (error) {
@@ -138,9 +138,14 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
       try {
         const formatInfo = await api.getPresetFormats(selectedPreset);
         
-        // Si el preset tiene formatos específicos, actualizar la lista
+        // Si el preset tiene formatos restringidos
         if (!formatInfo.flexible && formatInfo.compatibleFormats) {
           setCompatibleFormats(formatInfo.compatibleFormats);
+          
+          // Si el formato actual no es compatible, cambiar al primero compatible
+          if (!formatInfo.compatibleFormats.includes(customOptions.format)) {
+            updateOption('format', formatInfo.compatibleFormats[0]);
+          }
         } else {
           setCompatibleFormats(null);
         }
@@ -162,13 +167,12 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
     setUploadError(null);
     
     try {
-      console.log('Analyzing file...');
       const data = await api.analyzeFile(file);
       setFileInfo(data.info);
       setAnalysisResults(data);
-      console.log('File analyzed successfully');
     } catch (error) {
       console.error('Error analyzing file:', error);
+      setUploadError('Error al analizar el archivo');
     }
   };
 
@@ -198,7 +202,6 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
     setCompatibleFormats(null);
     setCustomOptions(DEFAULT_OPTIONS);
     if (fileInputRef.current) fileInputRef.current.value = '';
-    console.log('Form reset');
   };
 
   const handleSubmit = async (e) => {
@@ -210,7 +213,7 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
     }
 
     // VALIDACIÓN FINAL ANTES DE ENVIAR
-    if (validationStatus && !validationStatus.ok) {
+    if (validationStatus && !validationStatus.ok && !validationStatus.valid) {
       setUploadError(
         `Configuración incompatible: ${validationStatus.message || validationStatus.error}`
       );
@@ -224,6 +227,7 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
     formData.append('file', selectedFile);
     formData.append('preset', selectedPreset);
     
+    // Enviar todas las opciones personalizadas
     for (const [key, value] of Object.entries(customOptions)) {
       if (value !== '' && value !== false && value !== 0 && value !== null) {
         formData.append(key, value);
@@ -231,34 +235,28 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
     }
 
     try {
-      console.log('Uploading file with userId:', userId);
+      // USAR api.createJob en lugar de fetch directo
+      const data = await api.createJob(formData);
       
-      const response = await fetch('http://localhost:3000/api/convert', {
-        method: 'POST',
-        headers: {
-          'X-User-Id': userId || ''
-        },
-        body: formData
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || errorData.message || 'Error al subir el archivo');
-      }
-
-      const data = await response.json();
-      
-      console.log('Conversion job created:', data.jobId);
-      
+      // Mostrar mensaje si el formato fue ajustado automáticamente
       if (data.formatAdjusted) {
-        console.log('ℹ️ Formato ajustado:', data.message);
+        console.log('Formato ajustado automáticamente:', data.message);
+        // Opcional: mostrar notificación al usuario
+        setUploadError(null); // Limpiar errores previos
       }
       
       onJobCreated(data);
       resetForm();
+      
     } catch (error) {
       console.error('Error uploading file:', error);
-      setUploadError(error.message || 'Error al iniciar la conversión');
+      
+      // Manejar errores de incompatibilidad del backend
+      if (error.message?.includes('incompatible') || error.message?.includes('Incompatibilidad')) {
+        setUploadError(`${error.message}`);
+      } else {
+        setUploadError(error.message || 'Error al iniciar la conversión');
+      }
     } finally {
       setIsUploading(false);
     }
@@ -270,13 +268,13 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
 
   const applySuggestion = (preset) => {
     setSelectedPreset(preset);
-    console.log('Applied suggestion:', preset);
   };
 
+  // Función para aplicar formato compatible automáticamente
   const applyCompatibleFormat = (format) => {
     updateOption('format', format);
     setValidationStatus(null);
-    console.log('Applied compatible format:', format);
+    setUploadError(null);
   };
 
   return (
@@ -340,49 +338,101 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
           )}
         </button>
 
-        {/* Validación */}
-        {validationStatus && !validationStatus.ok && (
-          <div className="warning-message">
-            <span>⚠️</span>
-            <div style={{ flex: 1 }}>
-              <strong>Incompatibilidad detectada:</strong>
-              <p style={{ margin: '4px 0' }}>
-                {validationStatus.message || validationStatus.error}
-              </p>
-              {validationStatus.suggestedFormats?.length > 0 && (
-                <div style={{ marginTop: '8px' }}>
-                  <strong>Formatos compatibles:</strong>
-                  <div style={{ display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
-                    {validationStatus.suggestedFormats.map(fmt => (
-                      <button
-                        key={fmt}
-                        onClick={() => applyCompatibleFormat(fmt)}
-                        style={{
-                          padding: '6px 12px',
-                          background: '#fff',
-                          border: '1px solid #ffc107',
-                          borderRadius: '4px',
-                          cursor: 'pointer'
-                        }}
-                        type="button"
-                      >
-                        {fmt.toUpperCase()}
-                      </button>
-                    ))}
+        {/* Alerta de incompatibilidad */}
+        {validationStatus && !validationStatus.ok && !validationStatus.valid && (
+          <div style={{
+            marginTop: '16px',
+            padding: '12px 16px',
+            background: '#fff3cd',
+            border: '1px solid #ffc107',
+            borderRadius: '8px',
+            color: '#856404',
+            fontSize: '14px'
+          }}
+          role="alert"
+          >
+            <div style={{ display: 'flex', alignItems: 'start', gap: '8px' }}>
+              <span style={{ fontSize: '18px' }}>⚠️</span>
+              <div style={{ flex: 1 }}>
+                <strong>Incompatibilidad detectada:</strong>
+                <p style={{ margin: '4px 0 8px 0' }}>
+                  {validationStatus.message || validationStatus.error}
+                </p>
+                
+                {validationStatus.suggestedFormats && validationStatus.suggestedFormats.length > 0 && (
+                  <div>
+                    <strong>Formatos compatibles:</strong>
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
+                      {validationStatus.suggestedFormats.map(fmt => (
+                        <button
+                          key={fmt}
+                          onClick={() => applyCompatibleFormat(fmt)}
+                          style={{
+                            padding: '6px 12px',
+                            background: '#fff',
+                            border: '1px solid #ffc107',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '13px',
+                            fontWeight: '500',
+                            color: '#856404',
+                            transition: 'all 0.2s'
+                          }}
+                          onMouseOver={(e) => e.target.style.background = '#ffc107'}
+                          onFocus={(e) => e.target.style.background = '#ffc107'}
+                          onMouseOut={(e) => e.target.style.background = '#fff'}
+                          onBlur={(e) => e.target.style.background = '#fff'}
+                          type="button"
+                        >
+                          Usar {fmt.toUpperCase()}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           </div>
         )}
 
-        {validationStatus?.ok && validationStatus.willAutoAdjust && (
-          <div className="success-message">
+        {/* Ajuste automático de formato */}
+        {validationStatus?.ok && validationStatus?.willAutoAdjust && (
+          <div style={{
+            marginTop: '16px',
+            padding: '12px 16px',
+            background: '#d1ecf1',
+            border: '1px solid #17a2b8',
+            borderRadius: '8px',
+            color: '#0c5460',
+            fontSize: '14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}>
             <span>ℹ️</span>
             <span>
-              Formato se ajustará de <strong>{customOptions.format}</strong> a{' '}
-              <strong>{validationStatus.resolvedFormat}</strong>
+              El formato se ajustará automáticamente de <strong>{customOptions.format}</strong> a{' '}
+              <strong>{validationStatus.resolvedFormat}</strong> para compatibilidad.
             </span>
+          </div>
+        )}
+
+        {/* Configuración válida */}
+        {validationStatus && (validationStatus.ok || validationStatus.valid) && !validationStatus.willAutoAdjust && (
+          <div style={{
+            marginTop: '16px',
+            padding: '12px 16px',
+            background: '#d4edda',
+            border: '1px solid #28a745',
+            borderRadius: '8px',
+            color: '#155724',
+            fontSize: '14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}>
+            <span>✓</span>
+            <span>Configuración compatible: <strong>{selectedPreset}</strong> + <strong>{customOptions.format}</strong></span>
           </div>
         )}
 
@@ -406,7 +456,7 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
         )}
 
         {/* Sugerencias de análisis */}
-        {analysisResults?.suggestions?.length > 0 && (
+        {analysisResults?.suggestions && analysisResults.suggestions.length > 0 && (
           <div className="analysis-suggestions">
             <h3>💡 Recomendaciones de Optimización</h3>
             {analysisResults.suggestions.map((suggestion, index) => (
@@ -457,6 +507,9 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
                   {presets[selectedPreset].crf && (
                     <p><strong>Calidad (CRF):</strong> {presets[selectedPreset].crf}</p>
                   )}
+                  {presets[selectedPreset].preset && (
+                    <p><strong>Velocidad:</strong> {presets[selectedPreset].preset}</p>
+                  )}
                 </div>
               )}
             </div>
@@ -468,27 +521,27 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
               <div className="option-group">
                 <label htmlFor="format-select">
                   Formato de Salida:
-                  {isValidating && <span style={{ marginLeft: '8px' }}>⏳</span>}
+                  {isValidating && <span style={{ marginLeft: '8px', fontSize: '12px' }}>⏳</span>}
                 </label>
                 <select 
                   id="format-select"
                   value={customOptions.format}
                   onChange={(e) => updateOption('format', e.target.value)}
                   style={{
-                    borderColor: validationStatus && !validationStatus.ok ? '#f44336' : undefined
+                    borderColor: validationStatus && !validationStatus.ok && !validationStatus.valid ? '#f44336' : undefined
                   }}
                 >
                   {FORMATS.map(fmt => (
                     <option key={fmt} value={fmt}>
                       {fmt.toUpperCase()}
-                      </option>
+                    </option>
                   ))}
                 </select>
                 
                 {/* Indicador de formatos compatibles */}
-                {compatibleFormats?.length > 0 && (
+                {compatibleFormats && compatibleFormats.length > 0 && (
                   <p style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
-                    ℹ️ Solo acepta: {compatibleFormats.join(', ').toUpperCase()}
+                    ℹ️ Este preset solo acepta: {compatibleFormats.join(', ').toUpperCase()}
                   </p>
                 )}
               </div>
@@ -548,7 +601,7 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
                 />
               </div>
 
-               {/* Checkboxes */}
+              {/* Checkboxes */}
               <div className="checkboxes-group">
                 {CHECKBOX_OPTIONS.map(({ key, label }) => (
                   <label key={key} className="checkbox-label">
@@ -556,6 +609,7 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
                       type="checkbox"
                       checked={customOptions[key]}
                       onChange={(e) => updateOption(key, e.target.checked)}
+                      aria-label={label}
                     />
                     {label}
                   </label>
@@ -571,9 +625,12 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
               disabled={
                 !selectedFile || 
                 isUploading || 
-                (validationStatus && !validationStatus.ok)
+                (validationStatus && !validationStatus.ok && !validationStatus.valid)
               }
               className="btn-convert"
+              style={{
+                opacity: (validationStatus && !validationStatus.ok && !validationStatus.valid) ? 0.5 : 1
+              }}
             >
               {isUploading ? '⏳ Procesando...' : '🚀 Iniciar Conversión'}
             </button>
@@ -597,8 +654,7 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {}, userI
 UploadForm.propTypes = {
   presets: PropTypes.object,
   formats: PropTypes.array,
-  onJobCreated: PropTypes.func,
-  userId: PropTypes.string
+  onJobCreated: PropTypes.func
 };
 
 export default UploadForm;
