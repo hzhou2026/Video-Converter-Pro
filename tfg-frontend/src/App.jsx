@@ -23,17 +23,15 @@ function App() {
   useEffect(() => {
     const loadInitialData = async () => {
       try {
-        const [presetsData, formatsData, jobsData, healthData] = await Promise.all([
+        const [presetsData, formatsData, jobsData] = await Promise.all([
           api.fetchPresets(),
           api.fetchFormats(),
           api.fetchJobs(),
-          api.fetchSystemHealth()
         ]);
 
         setPresets(presetsData);
         setFormats(formatsData);
         setJobs(jobsData);
-        setSystemHealth(healthData);
       } catch (error) {
         console.error('Error loading initial data:', error);
       }
@@ -121,12 +119,8 @@ function App() {
   // Actualizar datos manualmente
   const refreshData = async () => {
     try {
-      const [jobsData, healthData] = await Promise.all([
-        api.fetchJobs(),
-        api.fetchSystemHealth()
-      ]);
+      const jobsData = await api.fetchJobs();
       setJobs(jobsData);
-      setSystemHealth(healthData);
     } catch (error) {
       console.error('Error refreshing data:', error);
     }
