@@ -2180,7 +2180,6 @@ const suggestOptimalSettings = (info) => {
             suggestions.push({
                 type: 'resolution',
                 message: 'Video 4K detectado. Considerar ajustar a 1080p para la mayoría de los usos.',
-                preset: 'youtube-1080p'
             });
         }
 
