@@ -11,7 +11,7 @@ export const useSocket = () => {
 
     // Configurar la URL del socket según el entorno
     const socketUrl = isDevelopment
-      ? `http://${window.location.hostname}:3000`
+      ? `http://${globalThis.location.hostname}:3000`
       : globalThis.location.origin;
 
     console.log('Connecting to Socket.IO:', socketUrl);
