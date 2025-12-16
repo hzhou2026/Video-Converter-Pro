@@ -8,10 +8,10 @@ export const useSocket = () => {
   useEffect(() => {
     // Detectar entorno
     const isDevelopment = import.meta.env.DEV;
-    
+
     // Configurar la URL del socket según el entorno
-    const socketUrl = isDevelopment 
-      ? 'http://localhost:3000'
+    const socketUrl = isDevelopment
+      ? `http://${window.location.hostname}:3000`
       : globalThis.location.origin;
 
     console.log('Connecting to Socket.IO:', socketUrl);

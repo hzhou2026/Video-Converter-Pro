@@ -2,7 +2,7 @@ const isDevelopment = import.meta.env.DEV;
 
 // Configurar la URL base según el entorno
 const BASE_URL = isDevelopment 
-  ? 'http://localhost:3000'
+  ? `http://${globalThis.location.hostname}:3000`
   : '';
 
 const handleResponse = async (response) => {
