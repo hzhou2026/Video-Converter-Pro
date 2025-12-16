@@ -263,10 +263,10 @@ class CleanupManager {
         try {
             if (inputPath && fsSync.existsSync(inputPath)) {
                 await fs.unlink(inputPath);
-                this.logger.info(`✓ Deleted input file: ${inputPath}`);
+                this.logger.info(` Deleted input file: ${inputPath}`);
             }
         } catch (error) {
-            this.logger.error(`✗ Failed to delete input ${inputPath}:`, error.message);
+            this.logger.error(` Failed to delete input ${inputPath}:`, error.message);
         }
     }
 
@@ -288,16 +288,16 @@ class CleanupManager {
         try {
             if (outputPath && fsSync.existsSync(outputPath)) {
                 await fs.unlink(outputPath);
-                this.logger.info(`✓ Deleted output file: ${outputPath}`);
+                this.logger.info(` Deleted output file: ${outputPath}`);
             }
 
             // Limpiar job del sistema
             this.jobManager.deleteJob(jobId);
             await this.redis.del(`job:${jobId}`);
 
-            this.logger.info(`✓ Cleaned up job ${jobId} completely`);
+            this.logger.info(` Cleaned up job ${jobId} completely`);
         } catch (error) {
-            this.logger.error(`✗ Failed to cleanup output for job ${jobId}:`, error.message);
+            this.logger.error(` Failed to cleanup output for job ${jobId}:`, error.message);
         }
     }
 
@@ -314,7 +314,7 @@ class CleanupManager {
             if (ffmpegCommand && typeof ffmpegCommand.cancel === 'function') {
                 ffmpegCommand.cancel();
                 activeFFmpegProcesses.delete(jobId);
-                this.logger.info(`✓ Killed FFmpeg process for job ${jobId}`);
+                this.logger.info(` Killed FFmpeg process for job ${jobId}`);
             }
 
             // Cancelar en Bull queue
@@ -324,7 +324,7 @@ class CleanupManager {
                     const bullJob = await videoQueue.getJob(bullJobId);
                     if (bullJob) {
                         await bullJob.remove();
-                        this.logger.info(`✓ Removed Bull job ${bullJobId}`);
+                        this.logger.info(` Removed Bull job ${bullJobId}`);
                     }
                 } catch (err) {
                     this.logger.warn(`Could not remove Bull job ${bullJobId}:`, err.message);
@@ -334,21 +334,21 @@ class CleanupManager {
             // Limpiar archivos
             if (job.inputPath && fsSync.existsSync(job.inputPath)) {
                 await fs.unlink(job.inputPath);
-                this.logger.info(`✓ Deleted input: ${job.inputPath}`);
+                this.logger.info(` Deleted input: ${job.inputPath}`);
             }
 
             if (job.outputPath && fsSync.existsSync(job.outputPath)) {
                 await fs.unlink(job.outputPath);
-                this.logger.info(`✓ Deleted partial output: ${job.outputPath}`);
+                this.logger.info(` Deleted partial output: ${job.outputPath}`);
             }
 
             // Limpiar de Redis y JobManager
             this.jobManager.deleteJob(jobId);
             await this.redis.del(`job:${jobId}`);
 
-            this.logger.info(`✓ Job ${jobId} cleanup completed`);
+            this.logger.info(` Job ${jobId} cleanup completed`);
         } catch (error) {
-            this.logger.error(`✗ Error cleaning cancelled job ${jobId}:`, error.message);
+            this.logger.error(` Error cleaning cancelled job ${jobId}:`, error.message);
         }
     }
 
@@ -370,7 +370,7 @@ class CleanupManager {
                         const filePath = path.join(dirPath, file);
                         await fs.unlink(filePath);
                         cleaned++;
-                        this.logger.info(`✓ Deleted orphan file: ${filePath}`);
+                        this.logger.info(` Deleted orphan file: ${filePath}`);
                     }
                 }
             } catch (err) {
@@ -379,7 +379,7 @@ class CleanupManager {
         }
 
         if (cleaned > 0) {
-            this.logger.info(`✓ Cleaned ${cleaned} orphan files`);
+            this.logger.info(` Cleaned ${cleaned} orphan files`);
         }
 
         return cleaned;
@@ -429,7 +429,7 @@ class CleanupManager {
         }
 
         if (cleaned > 0) {
-            this.logger.info(`✓ Cleaned ${cleaned} old jobs`);
+            this.logger.info(` Cleaned ${cleaned} old jobs`);
         }
 
         return cleaned;
@@ -677,7 +677,7 @@ const PRESETS = {
         crf: 15,
         preset: 'veryslow',
         audioBitrate: '320k',
-        description: 'H.264 Ultra - Máxima calidad',
+        description: 'Máxima calidad',
         allowCustomOptions: true
     },
     'h264-high': {
@@ -686,7 +686,7 @@ const PRESETS = {
         crf: 18,
         preset: 'slow',
         audioBitrate: '256k',
-        description: 'H.264 Alta Calidad',
+        description: 'Calidad',
         allowCustomOptions: true
     },
     'h264-normal': {
@@ -695,7 +695,7 @@ const PRESETS = {
         crf: 23,
         preset: 'medium',
         audioBitrate: '192k',
-        description: 'H.264 Calidad Normal - Balance ideal',
+        description: 'Balance ideal',
         allowCustomOptions: true
     },
     'h264-fast': {
@@ -704,7 +704,7 @@ const PRESETS = {
         crf: 28,
         preset: 'fast',
         audioBitrate: '128k',
-        description: 'H.264 Rápido - Menor calidad pero más rápido',
+        description: 'Menor calidad pero más rápido',
         allowCustomOptions: true
     },
 
@@ -714,7 +714,7 @@ const PRESETS = {
         crf: 24,
         preset: 'medium',
         audioBitrate: '192k',
-        description: 'H.265/HEVC Alta Calidad - 50% menos tamaño que H.264',
+        description: '50% menos tamaño que H.264',
         allowCustomOptions: true
     },
     'h265-normal': {
@@ -723,7 +723,7 @@ const PRESETS = {
         crf: 28,
         preset: 'medium',
         audioBitrate: '128k',
-        description: 'H.265/HEVC Normal - Mejor compresión que H.264',
+        description: 'Mejor compresión que H.264',
         allowCustomOptions: true
     },
 
@@ -733,7 +733,7 @@ const PRESETS = {
         crf: 28,
         preset: 6,
         audioBitrate: '192k',
-        description: 'AV1 Alta Calidad - Mejor compresión moderna',
+        description: 'Mejor compresión moderna',
         allowCustomOptions: true
     },
     'av1-normal': {
@@ -742,7 +742,7 @@ const PRESETS = {
         crf: 30,
         preset: 6,
         audioBitrate: '128k',
-        description: 'AV1 Normal - Codec del futuro',
+        description: 'Codec del futuro',
         allowCustomOptions: true
     },
 
@@ -752,7 +752,7 @@ const PRESETS = {
         crf: 31,
         preset: 'good',
         audioBitrate: '128k',
-        description: 'VP9 para Web - Compatible con navegadores',
+        description: 'Compatible con navegadores',
         allowCustomOptions: true
     },
 
@@ -763,7 +763,7 @@ const PRESETS = {
         preset: 'good',
         audioBitrate: '128k',
         outputFormat: 'webm',
-        description: 'WebM VP9 - Formato web moderno',
+        description: 'Formato web moderno',
         extraOptions: [
             '-b:v', '0',
             '-tile-columns', '2',
@@ -777,7 +777,7 @@ const PRESETS = {
         audioCodec: 'libvorbis',
         audioBitrate: '128k',
         outputFormat: 'webm',
-        description: 'WebM VP8 Rápido - Conversión veloz',
+        description: 'Conversión veloz',
         extraOptions: [
             '-b:v', '1M',
             '-quality', 'good',
@@ -819,7 +819,7 @@ const PRESETS = {
     },
 
     'gif-animated': {
-        description: 'GIF Animado - Para clips cortos',
+        description: 'Para clips cortos',
         outputFormat: 'gif',
         fps: 10,
         resolution: '480x?',
@@ -839,7 +839,7 @@ const PRESETS = {
         audioBitrate: '256k',
         resolution: '3840x2160',
         fps: 30,
-        description: 'YouTube 4K (3840x2160)',
+        description: '(3840x2160)',
         extraOptions: ['-movflags', '+faststart', '-pix_fmt', 'yuv420p'],
         allowCustomOptions: true
     },
@@ -851,7 +851,7 @@ const PRESETS = {
         audioBitrate: '192k',
         resolution: '1920x1080',
         fps: 30,
-        description: 'YouTube 1080p (Full HD)',
+        description: '(Full HD)',
         extraOptions: ['-movflags', '+faststart', '-pix_fmt', 'yuv420p'],
         allowCustomOptions: true
     },
@@ -865,7 +865,7 @@ const PRESETS = {
         resolution: '1080x1080',
         fps: 30,
         maxDuration: 60,
-        description: 'Instagram Post (1:1 cuadrado)',
+        description: '(1:1 cuadrado)',
         extraOptions: ['-movflags', '+faststart'],
         allowCustomOptions: true
     },
@@ -878,7 +878,7 @@ const PRESETS = {
         resolution: '1080x1920',
         fps: 30,
         maxDuration: 90,
-        description: 'Instagram Reel (9:16 vertical)',
+        description: '(9:16 vertical)',
         extraOptions: ['-movflags', '+faststart'],
         allowCustomOptions: true
     },
@@ -892,7 +892,7 @@ const PRESETS = {
         resolution: '1080x1920',
         fps: 30,
         maxDuration: 180,
-        description: 'TikTok (9:16 vertical)',
+        description: '(9:16 vertical)',
         extraOptions: ['-movflags', '+faststart'],
         allowCustomOptions: true
     },
@@ -905,7 +905,7 @@ const PRESETS = {
         audioBitrate: '128k',
         maxSize: '512MB',
         maxDuration: 140,
-        description: 'Twitter/X (límite 512MB)',
+        description: '(límite 512MB)',
         extraOptions: ['-movflags', '+faststart'],
         allowCustomOptions: true
     },
@@ -915,7 +915,7 @@ const PRESETS = {
     'prores-hq': {
         videoCodec: 'prores_ks',
         audioCodec: 'pcm_s16le',
-        description: 'ProRes 422 HQ - Producción profesional',
+        description: 'Producción profesional',
         outputFormat: 'mov',
         extraOptions: [
             '-profile:v', '3',
@@ -927,7 +927,7 @@ const PRESETS = {
     'prores-standard': {
         videoCodec: 'prores_ks',
         audioCodec: 'pcm_s16le',
-        description: 'ProRes 422 - Estándar profesional',
+        description: 'Estándar profesional',
         outputFormat: 'mov',
         extraOptions: [
             '-profile:v', '2',
@@ -938,7 +938,7 @@ const PRESETS = {
     'prores-lt': {
         videoCodec: 'prores_ks',
         audioCodec: 'pcm_s16le',
-        description: 'ProRes LT - Edición ligera',
+        description: 'Edición ligera',
         outputFormat: 'mov',
         extraOptions: [
             '-profile:v', '1',
@@ -949,7 +949,7 @@ const PRESETS = {
     'prores-proxy': {
         videoCodec: 'prores_ks',
         audioCodec: 'pcm_s16le',
-        description: 'ProRes Proxy - Edición offline',
+        description: 'Edición offline',
         outputFormat: 'mov',
         extraOptions: [
             '-profile:v', '0',
@@ -961,7 +961,7 @@ const PRESETS = {
     'avi-ffv1-lossless': {
         videoCodec: 'ffv1',
         audioCodec: 'pcm_s16le',
-        description: 'FFV1 Lossless - Archivo profesional',
+        description: 'Archivo profesional',
         outputFormat: 'avi',
         extraOptions: [
             '-level', '3',
@@ -976,7 +976,7 @@ const PRESETS = {
     'avi-huffyuv-lossless': {
         videoCodec: 'huffyuv',
         audioCodec: 'pcm_s16le',
-        description: 'HuffYUV Lossless - ~50% tamaño raw',
+        description: ' ~50% tamaño raw',
         outputFormat: 'avi',
         extraOptions: [
             '-pix_fmt', 'yuv422p',
@@ -987,7 +987,7 @@ const PRESETS = {
     'avi-utvideo-lossless': {
         videoCodec: 'utvideo',
         audioCodec: 'pcm_s16le',
-        description: 'UT Video Lossless - Rápido para edición',
+        description: 'Rápido para edición',
         outputFormat: 'avi',
         extraOptions: [
             '-pix_fmt', 'yuv422p',
@@ -999,7 +999,7 @@ const PRESETS = {
     'avi-mjpeg-high': {
         videoCodec: 'mjpeg',
         audioCodec: 'pcm_s16le',
-        description: 'MJPEG Alta Calidad - Para edición',
+        description: 'Para edición',
         outputFormat: 'avi',
         extraOptions: [
             '-q:v', '2',
@@ -1011,7 +1011,7 @@ const PRESETS = {
     'avi-mjpeg-normal': {
         videoCodec: 'mjpeg',
         audioCodec: 'pcm_s16le',
-        description: 'MJPEG Normal - Balance tamaño/calidad',
+        description: 'Balance tamaño/calidad',
         outputFormat: 'avi',
         extraOptions: [
             '-q:v', '5',
@@ -1023,7 +1023,7 @@ const PRESETS = {
     'avi-dv-pal': {
         videoCodec: 'dvvideo',
         audioCodec: 'pcm_s16le',
-        description: 'DV PAL (720x576) - Edición profesional',
+        description: 'Edición profesional',
         outputFormat: 'avi',
         resolution: '720x576',
         fps: 25,
@@ -1035,7 +1035,7 @@ const PRESETS = {
     'avi-dv-ntsc': {
         videoCodec: 'dvvideo',
         audioCodec: 'pcm_s16le',
-        description: 'DV NTSC (720x480) - Edición profesional',
+        description: 'Edición profesional',
         outputFormat: 'avi',
         resolution: '720x480',
         fps: 30,
@@ -1050,7 +1050,7 @@ const PRESETS = {
     'avi-raw-uncompressed': {
         videoCodec: 'rawvideo',
         audioCodec: 'pcm_s16le',
-        description: 'RAW Sin Comprimir - ¡Archivos ENORMES!',
+        description: '¡Archivos ENORMES!',
         outputFormat: 'avi',
         maxDuration: 60,
         extraOptions: [
@@ -1062,7 +1062,7 @@ const PRESETS = {
     'avi-raw-rgb': {
         videoCodec: 'rawvideo',
         audioCodec: 'pcm_s16le',
-        description: 'RAW RGB24 - ¡Archivos MUY GRANDES!',
+        description: '¡Archivos MUY GRANDES!',
         outputFormat: 'avi',
         maxDuration: 60,
         extraOptions: [
@@ -2148,7 +2148,7 @@ app.post('/api/analyze', upload.single('media'), async (req, res) => {
             try {
                 if (fsSync.existsSync(filePath)) {
                     await fs.unlink(filePath);
-                    logger.info(`✓ Deleted analyzed file: ${filePath}`);
+                    logger.info(` Deleted analyzed file: ${filePath}`);
                 }
             } catch (err) {
                 logger.error(`Failed to delete analyzed file ${filePath}:`, err);
