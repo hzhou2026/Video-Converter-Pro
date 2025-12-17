@@ -62,15 +62,15 @@ const PRESET_FORMAT_COMPATIBILITY = {
 const FORMAT_CODEC_COMPATIBILITY = {
   'mp4': {
     video: ['libx264', 'libx265', 'mpeg4', 'libaom-av1'],
-    audio: ['aac', 'mp3', 'ac3', 'libopus']
+    audio: ['aac', 'mp3', 'ac3', 'opus']
   },
   'mkv': {
     video: ['libx264', 'libx265', 'libvpx-vp9', 'libaom-av1', 'mpeg4', 'ffv1'],
-    audio: ['aac', 'mp3', 'libopus', 'libvorbis', 'flac', 'pcm_s16le', 'ac3']
+    audio: ['aac', 'mp3', 'opus', 'vorbis', 'flac', 'pcm_s16le', 'ac3']
   },
   'webm': {
     video: ['libvpx', 'libvpx-vp9', 'libaom-av1'],
-    audio: ['libopus', 'libvorbis']
+    audio: ['opus', 'vorbis']
   },
   'avi': {
     video: ['rawvideo', 'huffyuv', 'ffv1', 'utvideo', 'dvvideo', 'mjpeg', 'mpeg4', 'libx264'],
@@ -187,10 +187,10 @@ function validateConversionCompatibility(preset, format, presetConfig) {
     }
     
     if (presetConfig.audioCodec && 
-        !['libopus', 'libvorbis'].includes(presetConfig.audioCodec)) {
+        !['opus', 'vorbis'].includes(presetConfig.audioCodec)) {
       return {
         valid: false,
-        message: `WebM requiere códec de audio Opus (libopus) o Vorbis (libvorbis). "${presetConfig.audioCodec}" no es compatible.`
+        message: `WebM requiere códec de audio Opus (opus) o Vorbis (vorbis). "${presetConfig.audioCodec}" no es compatible.`
       };
     }
   }
@@ -262,8 +262,8 @@ function applyOutputFormat(command, preset, format, presetConfig) {
         command.outputOptions(['-crf', '31', '-b:v', '0']);
       }
       if (!presetConfig.audioCodec || 
-          !['libopus', 'libvorbis'].includes(presetConfig.audioCodec)) {
-        command.audioCodec('libopus');
+          !['opus', 'vorbis'].includes(presetConfig.audioCodec)) {
+        command.audioCodec('opus');
       }
       break;
       
