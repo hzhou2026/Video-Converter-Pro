@@ -10,6 +10,7 @@ const TABS = [
   { key: 'jobs', label: 'Trabajos', icon: '⚙️' },
 ];
 
+// Componente principal de la aplicación
 function App() {
   const socket = useSocket();
 
@@ -70,6 +71,23 @@ function App() {
 
   // Crear nuevo job
   const handleJobCreated = useCallback((response) => {
+    if (response.sessionId) {
+      localStorage.setItem('sessionId', response.sessionId);
+    } else if (!localStorage.getItem('sessionId')) {
+      // Generar uno si no existe
+      const generateUUID = () => {
+        if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+          return crypto.randomUUID();
+        }
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replaceAll(/[xy]/g, (c) => {
+          const r = Math.trunc(Math.random() * 16);
+          const v = c === 'x' ? r : (r & 0x3) | 0x8;
+          return v.toString(16);
+        });
+      };
+      localStorage.setItem('sessionId', generateUUID());
+    }
+
     const newJob = {
       id: response.jobId,
       status: response.status || 'queued',

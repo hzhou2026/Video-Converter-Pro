@@ -10,12 +10,14 @@ const ProgressBar = ({ job, onCancel, onDownload, isDownloaded }) => {
     return null;
   }
 
+  // Obtener el porcentaje de progreso
   const getProgressPercentage = () => {
     if (job.status === 'completed') return 100;
     if (['failed', 'cancelled'].includes(job.status)) return 0;
     return job.progress || 0;
   };
 
+  // Formatear tiempo en segundos a hh:mm:ss
   const formatTime = (seconds) => {
     if (!seconds) return '0s';
     const h = Math.floor(seconds / 3600);
@@ -26,6 +28,7 @@ const ProgressBar = ({ job, onCancel, onDownload, isDownloaded }) => {
     return `${s}s`;
   };
 
+  // Formatear tamaño de archivo
   const formatFileSize = (bytes) => {
     if (!bytes || bytes === 0) return '0 Bytes';
     const k = 1024;
@@ -34,6 +37,7 @@ const ProgressBar = ({ job, onCancel, onDownload, isDownloaded }) => {
     return `${Number.parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
   };
 
+  // Obtener color según el estado
   const getStatusColor = () => {
     const colors = {
       queued: '#ffa500',
@@ -45,6 +49,7 @@ const ProgressBar = ({ job, onCancel, onDownload, isDownloaded }) => {
     return colors[job.status] || '#757575';
   };
 
+  // Obtener texto según el estado
   const getStatusText = () => {
     const texts = {
       queued: 'En Cola',
@@ -56,43 +61,53 @@ const ProgressBar = ({ job, onCancel, onDownload, isDownloaded }) => {
     return texts[job.status] || 'Desconocido';
   };
 
-const handleDownload = async (e) => {
-  e.preventDefault();
-  
-  if (isDownloaded || isDownloading) {
-    return;
-  }
+  // Manejar descarga de archivo
+  const handleDownload = async (e) => {
+    e.preventDefault();
 
-  setIsDownloading(true);
-
-  try {
-    const response = await fetch(`http://localhost:3000/api/download/${job.id}`);
-    
-    if (!response.ok) {
-      throw new Error('Error al descargar el archivo');
+    // Evitar múltiples descargas
+    if (isDownloaded || isDownloading) {
+      return;
     }
 
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    
-    // Crear y hacer click en el enlace de manera más limpia
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = job.outputName || `video_${job.id}.mp4`;
-    link.click();
-    
-    // Limpiar después de un pequeño delay
-    setTimeout(() => URL.revokeObjectURL(url), 100);
+    // Iniciar descarga
+    setIsDownloading(true);
 
-    onDownload(job.id);
-  } catch (error) {
-    console.error('Error downloading file:', error);
-    alert('Error al descargar el archivo. Es posible que ya haya sido eliminado.');
-    onDownload(job.id);
-  } finally {
-    setIsDownloading(false);
-  }
-};
+    // Realizar petición de descarga
+    try {
+      const sessionId = localStorage.getItem('sessionId');
+
+      const response = await fetch(`http://localhost:3000/api/download/${job.id}`, {
+        headers: {
+          'x-session-id': sessionId
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error('Error al descargar el archivo');
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+
+      // Crear y hacer click en el enlace de manera más limpia
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = job.outputName || `video_${job.id}.mp4`;
+      link.click();
+
+      // Limpiar después de un pequeño delay
+      setTimeout(() => URL.revokeObjectURL(url), 100);
+
+      onDownload(job.id);
+    } catch (error) {
+      console.error('Error downloading file:', error);
+      alert('Error al descargar el archivo. Es posible que ya haya sido eliminado.');
+      onDownload(job.id);
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
   const progress = getProgressPercentage();
   const statusColor = getStatusColor();
@@ -118,7 +133,7 @@ const handleDownload = async (e) => {
             {getStatusText()}
           </span>
         </div>
-        
+
         {canCancel && (
           <button
             onClick={() => onCancel(job.id)}
@@ -151,28 +166,28 @@ const handleDownload = async (e) => {
         <div className="progress-details">
           {isProcessing && job.fps && (
             <div className="detail-item">
-              <span className="detail-label">🔹 FPS:</span>
+              <span className="detail-label">FPS:</span>
               <span className="detail-value">{Number.parseFloat(job.fps).toFixed(2)}</span>
             </div>
           )}
-          
+
           {isProcessing && job.speed && (
             <div className="detail-item">
-              <span className="detail-label">⚡ Velocidad:</span>
+              <span className="detail-label">Velocidad:</span>
               <span className="detail-value">{job.speed}</span>
             </div>
           )}
-          
+
           {isCompleted && job.result?.outputSize && (
             <div className="detail-item">
-              <span className="detail-label">💾 Tamaño:</span>
+              <span className="detail-label">Tamaño:</span>
               <span className="detail-value">{formatFileSize(job.result.outputSize)}</span>
             </div>
           )}
-          
+
           {isCompleted && job.result?.processingTime && (
             <div className="detail-item">
-              <span className="detail-label">⏰ Tiempo:</span>
+              <span className="detail-label">Tiempo:</span>
               <span className="detail-value">
                 {formatTime(job.result.processingTime / 1000)}
               </span>

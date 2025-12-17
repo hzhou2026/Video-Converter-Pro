@@ -14,9 +14,37 @@ export const useSocket = () => {
       ? `http://${globalThis.location.hostname}:3000`
       : globalThis.location.origin;
 
+    // Función para generar UUID compatible
+    const generateUUID = () => {
+      if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        return crypto.randomUUID();
+      }
+
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replaceALL(/[xy]/g, (c) => {
+        const r = Math.trunc(Math.random() * 16);
+        const v = c === 'x' ? r : (r & 0x3) | 0x8;
+        return v.toString(16);
+      });
+    };
+
+    const getSessionId = () => {
+      let sessionId = localStorage.getItem('sessionId');
+      if (!sessionId) {
+        sessionId = generateUUID();
+        localStorage.setItem('sessionId', sessionId);
+      }
+      return sessionId;
+    };
+
+    const sessionId = getSessionId();
+
     console.log('Connecting to Socket.IO:', socketUrl);
+    console.log('Using sessionId:', sessionId);
 
     const newSocket = io(socketUrl, {
+      auth: {
+        sessionId
+      },
       reconnection: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,

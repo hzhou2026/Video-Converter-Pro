@@ -90,22 +90,22 @@ const logger = winston.createLogger({
 app.use(helmet());
 app.use(compression());
 app.use(cors({
-  origin: process.env.FRONTEND_URL || "*",
-  credentials: true
+    origin: process.env.FRONTEND_URL || "*",
+    credentials: true
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Limitador de tasa
 const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutos
-    max: 100, // limite cada IP a 100 requests por ventana
+    windowMs: 60 * 60 * 1000, // 30 minutos
+    max: 150, // limite cada IP a 150 requests por ventana
     message: 'Demasiadas solicitudes de esta IP, por favor intente de nuevo más tarde.'
 });
 
 const uploadLimiter = rateLimit({
     windowMs: 60 * 60 * 1000, // 1 hora
-    max: 20, // limite cada IP a 20 uploads por hora
+    max: 150, // limite cada IP a 20 uploads por hora
     message: 'Límite de carga excedido, por favor intente de nuevo más tarde.'
 });
 
@@ -245,6 +245,8 @@ class JobManager {
     }
 }
 
+
+// ===================== GESTIÓN DE LIMPIEZA =====================
 class CleanupManager {
     constructor(config, jobManager, redis, logger) {
         this.config = config;
@@ -352,6 +354,7 @@ class CleanupManager {
         }
     }
 
+    // Limpiar archivos huérfanos en uploads/ y outputs/
     async cleanupOrphans(dirs) {
         let cleaned = 0;
         const now = Date.now();
@@ -405,7 +408,6 @@ class CleanupManager {
 
             return !belongsToJob;
         } catch (err) {
-            // Log the error for visibility, but do not attempt to delete the file
             logger.error(`Error accessing file ${path.join(dirPath, file)}:`, err.message);
             return false;
         }
@@ -729,7 +731,7 @@ const PRESETS = {
 
     'av1-high': {
         videoCodec: 'libaom-av1',
-        audioCodec: 'libopus',
+        audioCodec: 'opus',
         crf: 28,
         preset: 6,
         audioBitrate: '192k',
@@ -738,7 +740,7 @@ const PRESETS = {
     },
     'av1-normal': {
         videoCodec: 'libaom-av1',
-        audioCodec: 'libopus',
+        audioCodec: 'opus',
         crf: 30,
         preset: 6,
         audioBitrate: '128k',
@@ -748,7 +750,7 @@ const PRESETS = {
 
     'vp9-web': {
         videoCodec: 'libvpx-vp9',
-        audioCodec: 'libopus',
+        audioCodec: 'opus',
         crf: 31,
         preset: 'good',
         audioBitrate: '128k',
@@ -758,7 +760,7 @@ const PRESETS = {
 
     'webm-vp9': {
         videoCodec: 'libvpx-vp9',
-        audioCodec: 'libopus',
+        audioCodec: 'opus',
         crf: 31,
         preset: 'good',
         audioBitrate: '128k',
@@ -774,7 +776,7 @@ const PRESETS = {
     },
     'webm-vp8-fast': {
         videoCodec: 'libvpx',
-        audioCodec: 'libvorbis',
+        audioCodec: 'vorbis',
         audioBitrate: '128k',
         outputFormat: 'webm',
         description: 'Conversión veloz',
@@ -1270,7 +1272,7 @@ async function validateAndGetFormat(preset, format, filePath) {
 }
 
 // Crea y encola un trabajo de conversión
-async function createConversionJob(file, resolvedFormat, options) {
+async function createConversionJob(file, resolvedFormat, options, sessionId) {
     const inputPath = file.path;
     const outputFilename = `${path.parse(file.filename).name}_converted.${resolvedFormat}`;
     const outputPath = path.join(dirs.outputs, outputFilename);
@@ -1282,7 +1284,8 @@ async function createConversionJob(file, resolvedFormat, options) {
         outputPath,
         inputName: file.originalname,
         outputName: outputFilename,
-        options
+        options,
+        sessionId
     });
 
     logger.info(`Job created: ${job.id} for file: ${file.originalname}`);
@@ -1331,14 +1334,17 @@ function buildVideoFilters({ speed, denoise, stabilize, crop, rotate, flip, subt
     return videoFilters;
 }
 
+// Construir filtro de reducción de ruido
 function getDenoiseFilter(denoise) {
     return denoise ? ['hqdn3d=4:3:6:4.5'] : [];
 }
 
+// Construir filtro de estabilización
 function getStabilizeFilter(stabilize) {
     return stabilize ? ['deshake'] : [];
 }
 
+// Construir filtro de recorte
 function getCropFilter(crop) {
     if (!crop) return [];
     if (/^\d+:\d+:\d+:\d+$/.test(crop)) {
@@ -1349,6 +1355,7 @@ function getCropFilter(crop) {
     }
 }
 
+// Construir filtro de rotación
 function getRotateFilter(rotate) {
     if (!rotate || rotate === 0) return [];
     const normalizedRotate = ((rotate % 360) + 360) % 360;
@@ -1364,6 +1371,7 @@ function getRotateFilter(rotate) {
     }
 }
 
+// Construir filtro de volteo
 function getFlipFilter(flip) {
     if (flip === 'horizontal') {
         return ['hflip'];
@@ -1375,6 +1383,7 @@ function getFlipFilter(flip) {
     return [];
 }
 
+// Construir filtro de velocidad
 function getSpeedFilter(speed) {
     if (speed && speed !== 1 && speed !== '1') {
         const speedNum = Number.parseFloat(speed);
@@ -1385,6 +1394,7 @@ function getSpeedFilter(speed) {
     return [];
 }
 
+// Construir filtro de subtítulos
 function getSubtitlesFilter(subtitles) {
     if (subtitles && fsSync.existsSync(subtitles)) {
         const filterArg = String.raw`subtitles='${subtitles}'`;
@@ -1393,6 +1403,7 @@ function getSubtitlesFilter(subtitles) {
     return [];
 }
 
+// Construir filtros de audio
 function buildAudioFilters({ normalizeAudio, speed }) {
     const audioFilters = [];
 
@@ -1413,6 +1424,7 @@ function buildAudioFilters({ normalizeAudio, speed }) {
     return audioFilters;
 }
 
+// Construir filtros atempo para cambios de velocidad de audio
 function buildAtempoFilter(speed) {
     const filters = [];
     let remainingSpeed = speed;
@@ -1447,6 +1459,7 @@ function buildAtempoFilter(speed) {
     return filters;
 }
 
+// Aplicar opciones de audio
 function applyAudioOptions(command, { removeAudio, presetConfig, normalizeAudio, speed }) {
     if (removeAudio) {
         command.noAudio();
@@ -1476,6 +1489,7 @@ function applyAudioOptions(command, { removeAudio, presetConfig, normalizeAudio,
     }
 }
 
+// Aplicar formato de salida
 function buildOutputOptions({ presetConfig, jobId, customOptions = [] }) {
     const outputOptions = [];
     if (presetConfig.crf) {
@@ -2084,12 +2098,18 @@ app.get('/api/codecs', async (req, res) => {
     }
 });
 
+// Obtener estado de un trabajo
 app.get('/api/job/:jobId', async (req, res) => {
     try {
         const jobId = req.params.jobId;
+        const sessionId = req.headers['x-session-id'];
 
         // Primero intentar desde jobManager
         let job = jobManager.getJob(jobId);
+
+        if (job && job.sessionId !== sessionId) {
+            return res.status(403).json({ error: 'No tienes permiso para ver este trabajo' });
+        }
 
         // Si no está en memoria, buscar en Redis
         if (!job) {
@@ -2233,6 +2253,8 @@ app.post('/api/convert', upload.single('file'), async (req, res) => {
             return res.status(400).json({ error: 'No file uploaded' });
         }
 
+        const sessionId = req.headers['x-session-id'] || uuidv4();
+
         const options = parseConversionOptions(req.body);
         const { preset, format } = options;
 
@@ -2246,11 +2268,13 @@ app.post('/api/convert', upload.single('file'), async (req, res) => {
         const { job, outputFilename } = await createConversionJob(
             req.file,
             resolvedFormat,
-            options
+            options,
+            sessionId
         );
 
         res.status(201).json({
             jobId: job.id,
+            sessionId,
             status: 'queued',
             inputName: req.file.originalname,
             outputName: outputFilename,
@@ -2280,6 +2304,8 @@ app.post('/api/batch-convert', upload.array('videos', 10), async (req, res) => {
             return res.status(400).json({ error: 'No files uploaded' });
         }
 
+        const sessionId = req.headers['x-session-id'] || uuidv4();
+
         const jobs = [];
         const options = JSON.parse(req.body.options || '{}');
 
@@ -2287,7 +2313,7 @@ app.post('/api/batch-convert', upload.array('videos', 10), async (req, res) => {
             const inputPath = file.path;
             const outputFilename = `${path.parse(file.filename).name}_converted.${options.format || 'mp4'}`;
             const outputPath = path.join(dirs.outputs, outputFilename);
-
+            
             const job = jobManager.createJob({
                 type: 'batch-conversion',
                 inputPath,
@@ -2295,7 +2321,7 @@ app.post('/api/batch-convert', upload.array('videos', 10), async (req, res) => {
                 inputName: file.originalname,
                 outputName: outputFilename,
                 options,
-                userId: req.headers['x-user-id'] || 'anonymous'
+                sessionId
             });
 
             await videoQueue.add({
@@ -2366,10 +2392,16 @@ app.post('/api/validate-conversion', (req, res) => {
 
 // Obtener todos los jobs
 app.get('/api/jobs', (req, res) => {
-    const userId = req.headers['x-user-id'];
-    const jobs = jobManager.getAllJobs(userId);
+    const sessionId = req.headers['x-session-id'];
 
-    res.json(jobs);
+    if (!sessionId) {
+        return res.json([]);
+    }
+
+    const allJobs = jobManager.getAllJobs();
+    const userJobs = allJobs.filter(job => job.sessionId === sessionId);
+
+    res.json(userJobs);
 });
 
 // Cancelar job
@@ -2405,10 +2437,15 @@ app.delete('/api/job/:jobId', async (req, res) => {
 // Descargar archivo convertido
 app.get('/api/download/:jobId', async (req, res) => {
     try {
+        const sessionId = req.headers['x-session-id'];
         const job = jobManager.getJob(req.params.jobId);
 
         if (!job) {
             return res.status(404).json({ error: 'Job not found' });
+        }
+
+        if (job.sessionId !== sessionId) {
+            return res.status(403).json({ error: 'No tienes permiso para descargar este archivo' });
         }
 
         if (job.status !== 'completed') {
@@ -2616,6 +2653,7 @@ function createPresetInfo(presetName, presetConfig) {
     };
 }
 
+// Obtener códecs compatibles para un formato dado
 app.get('/api/format/:format/codecs', (req, res) => {
     try {
         const format = req.params.format;
@@ -2648,8 +2686,22 @@ app.get('/api/format/:format/codecs', (req, res) => {
 io.on('connection', (socket) => {
     logger.info(`Client connected: ${socket.id}`);
 
+    const sessionId = socket.handshake.auth.sessionId || socket.handshake.query.sessionId;
+    socket.sessionId = sessionId;
+    logger.info(`Client ${socket.id} with sessionId: ${sessionId}`);
+
     socket.on('subscribe', async (jobId) => {
         try {
+            const job = jobManager.getJob(jobId);
+
+            if (job && job.sessionId !== socket.sessionId) {
+                socket.emit('error', {
+                    message: 'No tienes permiso para ver este trabajo'
+                });
+                logger.warn(`Client ${socket.id} tried to access job ${jobId} without permission`);
+                return;
+            }
+
             socket.join(jobId);
 
             // Vincular job con socket
@@ -2657,7 +2709,6 @@ io.on('connection', (socket) => {
             logger.info(`Client ${socket.id} subscribed to job ${jobId}`);
 
             // Enviar estado actual del job
-            const job = jobManager.getJob(jobId);
             if (job) {
                 socket.emit('job:update', {
                     id: job.id,

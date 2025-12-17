@@ -10,6 +10,7 @@ const VIDEO_TYPES = new Set([
 
 const VIDEO_EXTENSIONS = /\.(mp4|avi|mov|mkv|webm|flv|wmv|m4v|ogv|hevc|h265|mts|m2ts|ts|vob|mpg|mpeg)$/i;
 
+// Opciones por defecto para la conversión
 const DEFAULT_OPTIONS = {
   format: 'mp4',
   resolution: '',
@@ -42,6 +43,7 @@ const CHECKBOX_OPTIONS = [
   { key: 'stabilize', label: 'Estabilizar Video' }
 ];
 
+// Formatear tamaño de archivo
 const formatFileSize = (bytes) => {
   if (bytes === 0) return '0 Bytes';
   const k = 1024;
@@ -50,6 +52,7 @@ const formatFileSize = (bytes) => {
   return Number.parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
+// Formatear duración en hh:mm:ss
 const formatDuration = (seconds) => {
   if (!seconds) return '0s';
   const h = Math.floor(seconds / 3600);
@@ -66,10 +69,12 @@ const formatDuration = (seconds) => {
   return result;
 };
 
+// Verificar si el archivo es un video válido
 const isVideoFile = (file) => {
   return VIDEO_TYPES.has(file.type) || VIDEO_EXTENSIONS.test(file.name);
 };
 
+// Componente UploadForm
 const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => {
   const [selectedFile, setSelectedFile] = useState(null);
   const [fileInfo, setFileInfo] = useState(null);
@@ -157,6 +162,7 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
     loadCompatibleFormats();
   }, [selectedPreset]);
 
+  // Manejar selección de archivo
   const handleFileSelect = async (file) => {
     if (!isVideoFile(file)) {
       setUploadError('Por favor selecciona un archivo de video válido');
@@ -176,6 +182,7 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
     }
   };
 
+  // Manejar eventos de arrastrar y soltar
   const handleDrop = (e) => {
     e.preventDefault();
     setIsDragOver(false);
@@ -183,16 +190,19 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
     if (files.length > 0) handleFileSelect(files[0]);
   };
 
+  // Manejar arrastrar sobre el área
   const handleDragOver = (e) => {
     e.preventDefault();
     setIsDragOver(true);
   };
 
+  // Manejar salida del área de arrastre
   const handleDragLeave = (e) => {
     e.preventDefault();
     setIsDragOver(false);
   };
 
+  // Resetear formulario
   const resetForm = () => {
     setSelectedFile(null);
     setFileInfo(null);
@@ -204,9 +214,11 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
+  // Manejar envío del formulario
   const handleSubmit = async (e) => {
     e.preventDefault();
     
+    // Validar que haya un archivo seleccionado
     if (!selectedFile) {
       setUploadError('Por favor selecciona un archivo');
       return;
@@ -241,7 +253,6 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
       // Mostrar mensaje si el formato fue ajustado automáticamente
       if (data.formatAdjusted) {
         console.log('Formato ajustado automáticamente:', data.message);
-        // Opcional: mostrar notificación al usuario
         setUploadError(null); // Limpiar errores previos
       }
       
@@ -262,10 +273,12 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
     }
   };
 
+  // Función para actualizar opciones personalizadas
   const updateOption = (key, value) => {
     setCustomOptions(prev => ({ ...prev, [key]: value }));
   };
 
+  // Función para aplicar sugerencia de análisis
   const applySuggestion = (preset) => {
     setSelectedPreset(preset);
   };
