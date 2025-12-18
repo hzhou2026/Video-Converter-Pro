@@ -185,9 +185,11 @@ ARCHIVOS  │         ▼        │
 
 ## AUTOR
 
-### **hzhou2021**  
+### **hzhou2026**  
 
-[![hzhou2021](https://img.shields.io/badge/GitHub-100000?style=for-the-badge&logo=github&logoColor=white)](https://github.com/hzhou2026)
+[![hzhou2026](https://img.shields.io/badge/GitHub-100000?style=for-the-badge&logo=github&logoColor=white)](https://github.com/hzhou2026)
+
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/hzhou04/)
 
 ## LICENCIA 
 ![I](https://github.com/hzhou2021/LTAW-Practicas/blob/main/P0/wiki/Logo-cc-by-sa.svg)
