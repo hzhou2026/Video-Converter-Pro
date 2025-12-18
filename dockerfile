@@ -3,7 +3,7 @@
 # ============================================
 FROM node:20-alpine AS builder
 
-# Instalar FFmpeg (necesario para tu aplicación)
+# Instalar FFmpeg
 RUN apk add --no-cache ffmpeg
 
 # Crear directorio de trabajo
