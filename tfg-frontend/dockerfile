@@ -40,3 +40,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 
 # Comando de inicio (por defecto en nginx)
 CMD ["nginx", "-g", "daemon off;"]
+

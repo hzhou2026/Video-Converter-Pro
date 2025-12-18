@@ -27,6 +27,7 @@ export const useSocket = () => {
       });
     };
 
+    // Obtener o generar sessionId
     const getSessionId = () => {
       let sessionId = localStorage.getItem('sessionId');
       if (!sessionId) {
@@ -41,6 +42,7 @@ export const useSocket = () => {
     console.log('Connecting to Socket.IO:', socketUrl);
     console.log('Using sessionId:', sessionId);
 
+    // Crear la conexión del socket
     const newSocket = io(socketUrl, {
       auth: {
         sessionId
@@ -77,3 +79,4 @@ export const useSocket = () => {
 
   return socket;
 };
+

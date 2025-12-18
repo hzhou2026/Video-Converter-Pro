@@ -140,7 +140,7 @@ class JobManager {
         this.maxJobs = maxJobs;
     }
 
-
+    // Crear nuevo job
     createJob(data) {
         if (this.jobs.size >= this.maxJobs) {
             this.evictOldestJob();
@@ -160,6 +160,7 @@ class JobManager {
         return job;
     }
 
+    // Asociar job con socketId
     linkJobToSocket(jobId, socketId) {
         this.jobSocketMap.set(jobId, socketId);
 
@@ -171,6 +172,7 @@ class JobManager {
         logger.info(`Linked job ${jobId} to socket ${socketId}`);
     }
 
+    // Desasociar job de socketId
     unlinkJobFromSocket(jobId) {
         const socketId = this.jobSocketMap.get(jobId);
         if (socketId) {
@@ -186,6 +188,7 @@ class JobManager {
         }
     }
 
+    // Obtener jobs por socketId
     getJobsBySocket(socketId) {
         const jobIds = this.socketJobsMap.get(socketId);
         if (!jobIds) return [];
@@ -195,6 +198,7 @@ class JobManager {
             .filter(Boolean);
     }
 
+    // Comprobar si socketId tiene jobs activos
     hasActiveJobs(socketId) {
         const jobs = this.getJobsBySocket(socketId);
         return jobs.some(j =>
@@ -204,14 +208,17 @@ class JobManager {
         );
     }
 
+    // Asociar Bull jobId con jobId interno
     setBullJobId(jobId, bullJobId) {
         this.bullJobIds.set(jobId, bullJobId);
     }
 
+    // Obtener Bull jobId por jobId interno
     getBullJobId(jobId) {
         return this.bullJobIds.get(jobId);
     }
 
+    // Actualizar job
     updateJob(jobId, updates) {
         const job = this.jobs.get(jobId);
         if (job) {
@@ -221,10 +228,12 @@ class JobManager {
         return job;
     }
 
+    // Obtener job
     getJob(jobId) {
         return this.jobs.get(jobId);
     }
 
+    // Obtener todos los jobs
     getAllJobs(userId = null) {
         const jobs = Array.from(this.jobs.values());
         if (userId) {
@@ -233,6 +242,7 @@ class JobManager {
         return jobs;
     }
 
+    // Eliminar el job
     deleteJob(jobId) {
         const job = this.jobs.get(jobId);
         if (job) {
@@ -265,10 +275,10 @@ class CleanupManager {
         try {
             if (inputPath && fsSync.existsSync(inputPath)) {
                 await fs.unlink(inputPath);
-                this.logger.info(` Deleted input file: ${inputPath}`);
+                this.logger.info(`Deleted input file: ${inputPath}`);
             }
         } catch (error) {
-            this.logger.error(` Failed to delete input ${inputPath}:`, error.message);
+            this.logger.error(`Failed to delete input ${inputPath}:`, error.message);
         }
     }
 
@@ -287,19 +297,20 @@ class CleanupManager {
             return;
         }
 
+        // Eliminar archivo de salida
         try {
             if (outputPath && fsSync.existsSync(outputPath)) {
                 await fs.unlink(outputPath);
-                this.logger.info(` Deleted output file: ${outputPath}`);
+                this.logger.info(`Deleted output file: ${outputPath}`);
             }
 
             // Limpiar job del sistema
             this.jobManager.deleteJob(jobId);
             await this.redis.del(`job:${jobId}`);
 
-            this.logger.info(` Cleaned up job ${jobId} completely`);
+            this.logger.info(`Cleaned up job ${jobId} completely`);
         } catch (error) {
-            this.logger.error(` Failed to cleanup output for job ${jobId}:`, error.message);
+            this.logger.error(`Failed to cleanup output for job ${jobId}:`, error.message);
         }
     }
 
@@ -316,7 +327,7 @@ class CleanupManager {
             if (ffmpegCommand && typeof ffmpegCommand.cancel === 'function') {
                 ffmpegCommand.cancel();
                 activeFFmpegProcesses.delete(jobId);
-                this.logger.info(` Killed FFmpeg process for job ${jobId}`);
+                this.logger.info(`Killed FFmpeg process for job ${jobId}`);
             }
 
             // Cancelar en Bull queue
@@ -326,22 +337,22 @@ class CleanupManager {
                     const bullJob = await videoQueue.getJob(bullJobId);
                     if (bullJob) {
                         await bullJob.remove();
-                        this.logger.info(` Removed Bull job ${bullJobId}`);
+                        this.logger.info(`Removed Bull job ${bullJobId}`);
                     }
                 } catch (err) {
                     this.logger.warn(`Could not remove Bull job ${bullJobId}:`, err.message);
                 }
             }
 
-            // Limpiar archivos
+            // Limpiar archivos subidos y generados
             if (job.inputPath && fsSync.existsSync(job.inputPath)) {
                 await fs.unlink(job.inputPath);
-                this.logger.info(` Deleted input: ${job.inputPath}`);
+                this.logger.info(`Deleted input: ${job.inputPath}`);
             }
 
             if (job.outputPath && fsSync.existsSync(job.outputPath)) {
                 await fs.unlink(job.outputPath);
-                this.logger.info(` Deleted partial output: ${job.outputPath}`);
+                this.logger.info(`Deleted partial output: ${job.outputPath}`);
             }
 
             // Limpiar de Redis y JobManager
@@ -362,6 +373,7 @@ class CleanupManager {
 
         this.logger.info('Scanning for orphan files...');
 
+        // Recorrer directorios para encontrar archivos huérfanos
         for (const [dirName, dirPath] of Object.entries(dirs)) {
             try {
                 const files = await fs.readdir(dirPath);
@@ -373,7 +385,7 @@ class CleanupManager {
                         const filePath = path.join(dirPath, file);
                         await fs.unlink(filePath);
                         cleaned++;
-                        this.logger.info(` Deleted orphan file: ${filePath}`);
+                        this.logger.info(`Deleted orphan file: ${filePath}`);
                     }
                 }
             } catch (err) {
@@ -382,7 +394,7 @@ class CleanupManager {
         }
 
         if (cleaned > 0) {
-            this.logger.info(` Cleaned ${cleaned} orphan files`);
+            this.logger.info(`Cleaned ${cleaned} orphan files`);
         }
 
         return cleaned;
@@ -431,7 +443,7 @@ class CleanupManager {
         }
 
         if (cleaned > 0) {
-            this.logger.info(` Cleaned ${cleaned} old jobs`);
+            this.logger.info(`Cleaned ${cleaned} old jobs`);
         }
 
         return cleaned;
@@ -1077,6 +1089,7 @@ const PRESETS = {
 
 // ===================== MULTER CONFIGURACIÓN =====================
 
+// Configuración de almacenamiento con nombres únicos
 const storage = multer.diskStorage({
     destination: dirs.uploads,
     filename: (req, file, cb) => {
@@ -1085,6 +1098,7 @@ const storage = multer.diskStorage({
     }
 });
 
+// Filtro de archivos para aceptar solo video y audio
 const upload = multer({
     storage: storage,
     limits: {
@@ -1129,6 +1143,7 @@ const getMediaInfo = (filePath) => {
                 const audioStream = metadata.streams.find(s => s.codec_type === 'audio');
                 const subtitleStream = metadata.streams.find(s => s.codec_type === 'subtitle');
 
+                // Construir objeto de información
                 resolve({
                     duration: metadata.format.duration,
                     size: metadata.format.size,
@@ -1176,6 +1191,7 @@ const formatSize = (bytes) => {
     return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
 };
 
+// Formatear duración en h/m/s
 const formatDuration = (seconds) => {
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
@@ -2168,7 +2184,7 @@ app.post('/api/analyze', upload.single('media'), async (req, res) => {
             try {
                 if (fsSync.existsSync(filePath)) {
                     await fs.unlink(filePath);
-                    logger.info(` Deleted analyzed file: ${filePath}`);
+                    logger.info(`Deleted analyzed file: ${filePath}`);
                 }
             } catch (err) {
                 logger.error(`Failed to delete analyzed file ${filePath}:`, err);

@@ -121,6 +121,7 @@ const ProgressBar = ({ job, onCancel, onDownload, isDownloaded }) => {
     return '📥 Descargar';
   };
 
+  // Renderizar componente
   return (
     <div className="progress-card" data-status={job.status}>
       {/* Encabezado */}
@@ -243,3 +244,4 @@ ProgressBar.propTypes = {
 };
 
 export default ProgressBar;
+

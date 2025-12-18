@@ -40,5 +40,3 @@ cache/
 *.tmp
 thumbnails/
 
-# --- Pruebas ---
-backup.js

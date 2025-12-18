@@ -290,6 +290,7 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
     setUploadError(null);
   };
 
+  // Renderizar componente
   return (
     <div className="upload-form">
       {/* Sección de Subida */}
@@ -671,3 +672,4 @@ UploadForm.propTypes = {
 };
 
 export default UploadForm;
+

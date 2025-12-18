@@ -56,3 +56,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # Comando de inicio
 CMD ["node", "server.js"]
+
