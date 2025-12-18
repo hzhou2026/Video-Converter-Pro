@@ -187,7 +187,7 @@ ARCHIVOS  │         ▼        │
 
 ### **hzhou2021**  
 
-[![hzhou2021](https://img.shields.io/badge/GitHub-100000?style=for-the-badge&logo=github&logoColor=white)](https://github.com/hzhou2021)
+[![hzhou2021](https://img.shields.io/badge/GitHub-100000?style=for-the-badge&logo=github&logoColor=white)](https://github.com/hzhou2026)
 
 ## LICENCIA 
 ![I](https://github.com/hzhou2021/LTAW-Practicas/blob/main/P0/wiki/Logo-cc-by-sa.svg)
