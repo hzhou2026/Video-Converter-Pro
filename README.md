@@ -93,16 +93,15 @@ npm run dev
 
 ### Backend
 - Node.js + Express
-- FFmpeg para conversión
-- Bull + Redis para colas
-- Socket.IO para tiempo real
-- Winston para logging
+- FFmpeg
+- Bull + Redis
+- Socket.IO
 
 ### Frontend
 - React 19
 - Vite
 - Socket.IO Client
-- CSS moderno
+- CSS
 
 ### Infraestructura
 - Docker + Docker Compose
