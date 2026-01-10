@@ -33,7 +33,7 @@ cp .env.example .env
 # Edita .env y cambia los valores necesarios
 
 # 3. Iniciar con Docker
-docker-compose up -d --build
+docker compose up -d --build
 
 # 4. Acceder a la aplicación
 # Frontend: http://localhost
@@ -47,13 +47,13 @@ docker-compose up -d --build
 docker-compose logs -f
 
 # Detener servicios
-docker-compose down
+docker compose down
 
 # Reiniciar servicios
-docker-compose restart
+docker compose restart
 
 # Ver estado
-docker-compose ps
+docker compose ps
 
 # Esto borra TODO ¡Cuidado!
 docker compose down -v
