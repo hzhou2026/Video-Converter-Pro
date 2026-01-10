@@ -44,7 +44,7 @@ docker compose up -d --build
 
 ```bash
 # Ver logs en tiempo real
-docker-compose logs -f
+docker compose logs -f
 
 # Detener servicios
 docker compose down
