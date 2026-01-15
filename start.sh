@@ -6,7 +6,7 @@ echo "=========================================="
 echo ""
 
 echo "Levantando contenedores..."
-docker compose up -d
+docker compose up -d --build
 
 echo ""
 echo "Esperando que los servicios estén listos..."
