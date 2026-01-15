@@ -1,9 +1,16 @@
 /*Estilos globales*/
 /* Reset y Base */
+html,
+body {
+  overflow-x: hidden;
+  width: 100%;
+}
+
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+  max-width: 100%;
 }
 
 body {
@@ -79,11 +86,7 @@ body {
 .status-indicator.healthy .status-dot {
   background: #4CAF50;
   box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
-}
-
-.status-indicator.degraded .status-dot {
-  background: #ffa500;
-  box-shadow: 0 0 10px rgba(255, 165, 0, 0.5);
+  animation: none;
 }
 
 .status-indicator.unhealthy .status-dot {
@@ -91,14 +94,24 @@ body {
   box-shadow: 0 0 10px rgba(244, 67, 54, 0.5);
 }
 
-@keyframes pulse {
+.status-indicator.connecting {
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.status-indicator.connecting .status-dot {
+  background: #ff9800;
+  box-shadow: 0 0 10px rgba(255, 152, 0, 0.5);
+  animation: pulse-connecting 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-connecting {
   0%, 100% {
     opacity: 1;
     transform: scale(1);
   }
   50% {
-    opacity: 0.6;
-    transform: scale(0.95);
+    opacity: 0.5;
+    transform: scale(0.9);
   }
 }
 
@@ -143,7 +156,7 @@ body {
 }
 
 .nav-tab.active {
-  color: #4c5ec4; 
+  color: #4c5ec4;
   border-bottom-color: #4c5ec4;
   background: #f8f9ff;
 }
@@ -155,7 +168,7 @@ body {
   left: 0;
   right: 0;
   height: 3px;
-  background: #4c5ec4; 
+  background: #4c5ec4;
   border-radius: 3px 3px 0 0;
 }
 
@@ -384,10 +397,10 @@ body {
   text-transform: uppercase;
   font-size: 11px;
   letter-spacing: 0.5px;
-  background: #fff3e0; 
+  background: #fff3e0;
   padding: 2px 8px;
   border-radius: 4px;
-  border: 1px solid #ffe0b2; 
+  border: 1px solid #ffe0b2;
 }
 
 .suggestion-message {
@@ -623,7 +636,7 @@ body {
 
 .btn-convert {
   flex: 1;
-  background: linear-gradient(135deg, #5562d6 0%, #6a3f93 100%); 
+  background: linear-gradient(135deg, #5562d6 0%, #6a3f93 100%);
   color: white;
   box-shadow: 0 4px 12px rgba(102, 126, 234, 0.25);
 }
@@ -925,6 +938,32 @@ body {
   }
 }
 
+@media (max-width: 1024px) and (min-width: 769px) {
+  .nav-tabs {
+    padding: 0 24px;
+  }
+
+  .app-main {
+    padding: 24px;
+  }
+
+  .checkboxes-group {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .nav-tab,
+  .btn-action,
+  .btn-convert,
+  .btn-clear,
+  .btn-cancel,
+  .btn-refresh,
+  .checkbox-label {
+    min-height: 44px;
+  }
+}
+
 @media (max-width: 480px) {
   .header-content h1 {
     font-size: 20px;
@@ -955,6 +994,37 @@ body {
 
   .drop-zone-content p {
     font-size: 13px;
+  }
+
+  .system-status {
+    width: 100%;
+  }
+
+  .status-indicator {
+    width: 100%;
+    justify-content: center;
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+
+  }
+
+  .file-selected {
+    flex-direction: column;
+    text-align: center;
+    gap: 12px;
+  }
+
+  .file-icon {
+    font-size: 36px;
+  }
+
+  .file-details h3 {
+    font-size: 16px;
   }
 }
 

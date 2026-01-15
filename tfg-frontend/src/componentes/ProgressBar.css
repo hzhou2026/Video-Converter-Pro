@@ -254,7 +254,7 @@
   flex-shrink: 0;
 }
 
-.error-message {
+.progress-error-message {
   color: #c62828;
   font-size: 14px;
   font-weight: 500;
@@ -318,6 +318,11 @@
   .detail-label,
   .detail-value {
     font-size: 11px;
+  }
+
+  .btn-action {
+    padding: 12px 16px;
+    font-size: 13px;
   }
 }
 
