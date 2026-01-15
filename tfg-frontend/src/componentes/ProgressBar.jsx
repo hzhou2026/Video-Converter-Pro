@@ -76,34 +76,52 @@ const ProgressBar = ({ job, onCancel, onDownload, isDownloaded }) => {
     // Realizar petición de descarga
     try {
       const sessionId = localStorage.getItem('sessionId');
+      
+      // Construir URL de descarga fixeado para funcionar tanto en local como en "producción"
+      const API_URL = process.env.REACT_APP_API_URL || globalThis.location.origin;
+      const downloadUrl = `${API_URL}/api/download/${job.id}`;
+      
+      console.log('Descargando desde:', downloadUrl);
 
-      const response = await fetch(`http://localhost:3000/api/download/${job.id}`, {
+      const response = await fetch(downloadUrl, {
         headers: {
           'x-session-id': sessionId
         }
       });
 
       if (!response.ok) {
-        throw new Error('Error al descargar el archivo');
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Error al descargar el archivo');
       }
 
+      console.log('Respuesta OK, obteniendo blob...');
       const blob = await response.blob();
+      console.log('Blob recibido:', blob.size, 'bytes');
+
+      if (blob.size === 0) {
+        throw new Error('El archivo descargado está vacío');
+      }
+
       const url = URL.createObjectURL(blob);
 
       // Crear y hacer click en el enlace de manera más limpia
       const link = document.createElement('a');
       link.href = url;
       link.download = job.outputName || `video_${job.id}.mp4`;
+      document.body.appendChild(link);
       link.click();
+      document.body.childNode.remove(link);
 
       // Limpiar después de un pequeño delay
-      setTimeout(() => URL.revokeObjectURL(url), 100);
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+        console.log('Descarga completada y limpieza realizada');
+      }, 100);
 
       onDownload(job.id);
     } catch (error) {
       console.error('Error downloading file:', error);
-      alert('Error al descargar el archivo. Es posible que ya haya sido eliminado.');
-      onDownload(job.id);
+      alert(`Error al descargar el archivo: ${error.message}`);
     } finally {
       setIsDownloading(false);
     }
@@ -215,7 +233,7 @@ const ProgressBar = ({ job, onCancel, onDownload, isDownloaded }) => {
       {job.error && (
         <div className="progress-error">
           <span className="error-icon">⚠️</span>
-          <span className="error-message">{job.error}</span>
+          <span className="progress-error-message">{job.error}</span>
         </div>
       )}
     </div>
