@@ -82,6 +82,19 @@ services:
       retries: 3
       start_period: 40s
 
+  # ============================================
+  # Cloudflare Tunnel
+  # ============================================
+  cloudflare-tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: video-converter-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://frontend:80
+    depends_on:
+      - frontend
+    networks:
+      - video-converter-network
+
 # ============================================
 # Volúmenes persistentes
 # ============================================
