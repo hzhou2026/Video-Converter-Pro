@@ -2476,28 +2476,54 @@ app.get('/api/download/:jobId', async (req, res) => {
         jobManager.updateJob(job.id, { isDownloading: true });
         logger.info(`Starting download for job ${job.id}`);
 
+        const fileStats = await fs.stat(job.outputPath);
+        
         // Configurar headers
         res.setHeader('Content-Disposition', `attachment; filename="${job.outputName}"`);
         res.setHeader('Content-Type', 'application/octet-stream');
-        res.setHeader('Content-Length', (await fs.stat(job.outputPath)).size);
+        res.setHeader('Content-Length', fileStats.size);
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Cache-Control', 'no-cache');
 
         // Crear stream
         const stream = fsSync.createReadStream(job.outputPath);
 
-        // Manejar finalización exitosa
-        stream.on('end', () => {
-            logger.info(`Download stream ended for job ${job.id}`);
-            jobManager.updateJob(job.id, { isDownloading: false });
+        let downloadCompleted = false;
+        let streamError = false;
+        let bytesSent = 0;
 
-            // Esperar 5 segundos para asegurar que el cliente procesó
+        // Contar bytes enviados
+        stream.on('data', (chunk) => {
+            bytesSent += chunk.length;
+        });
+
+        // Cuando el response termina
+        res.on('finish', () => {
+            if (streamError) return;
+            
+            downloadCompleted = true;
+            logger.info(`Download finished for job ${job.id}. Bytes sent: ${bytesSent}/${fileStats.size}`);
+            
+            // Verificar que se enviaron todos los bytes
+            const downloadSuccess = bytesSent === fileStats.size;
+            
+            if (!downloadSuccess) {
+                logger.warn(`Incomplete download for job ${job.id}: ${bytesSent}/${fileStats.size} bytes`);
+                jobManager.updateJob(job.id, { isDownloading: false });
+                return;
+            }
+
+            // Esperar 15 segundos para asegurar que el cliente procesó
             setTimeout(async () => {
-                logger.info(`Scheduling cleanup for job ${job.id}`);
+                logger.info(`Cleaning up job ${job.id} after successful download`);
+                jobManager.updateJob(job.id, { isDownloading: false });
                 await cleanupManager.cleanupOutput(job.id, job.outputPath);
-            }, 5000);
+            }, 15000);
         });
 
         // Manejar errores del stream
         stream.on('error', (err) => {
+            streamError = true;
             logger.error(`Download stream error for job ${job.id}:`, err);
             jobManager.updateJob(job.id, { isDownloading: false });
             if (!res.headersSent) {
@@ -2507,8 +2533,8 @@ app.get('/api/download/:jobId', async (req, res) => {
 
         // Manejar cierre de conexión del cliente
         res.on('close', () => {
-            if (jobManager.getJob(job.id)?.isDownloading) {
-                logger.warn(`Client closed connection during download: ${job.id}`);
+            if (!downloadCompleted && !streamError) {
+                logger.warn(`Client closed connection during download: ${job.id}. Bytes sent: ${bytesSent}/${fileStats.size}`);
                 jobManager.updateJob(job.id, { isDownloading: false });
                 stream.destroy();
             }
@@ -2519,7 +2545,15 @@ app.get('/api/download/:jobId', async (req, res) => {
 
     } catch (error) {
         logger.error('Download error:', error);
-        res.status(500).json({ error: 'Failed to download file', details: error.message });
+        
+        const job = jobManager.getJob(req.params.jobId);
+        if (job) {
+            jobManager.updateJob(job.id, { isDownloading: false });
+        }
+        
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Failed to download file', details: error.message });
+        }
     }
 });
 
