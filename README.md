@@ -204,7 +204,7 @@ npm run dev
    (Subir archivo,  │ │  (Progreso %, Estado,
     Cancelar job)   │ │   Error, Completado)
                     ▼ │
-   ┌────────────────┴──────────────────┐
+   ┌───────────────────────────────────┐
    │      SERVIDOR WEB / PROXY         │ ◄─── En Docker: Nginx
    │      (Frontend Entrypoint)        │ ◄─── Sin Docker: Vite / Localhost
    └────────────────┬──────────────────┘
@@ -212,24 +212,24 @@ npm run dev
                     │ │ 2. CANAL DE DATOS
       (Proxy Pass)  │ │ (Comunicación Bidireccional)
                     ▼ │
-   ┌────────────────┴──────────────────┐
+   ┌───────────────────────────────────┐
    │        SERVICIO BACKEND           │ ◄─── Node.js (Express + Socket.IO)
    │     (Gestor de Conversiones)      │
    └──────┬─────────┬────────▲─────────┘
-          │         │        │
-          │         │ 3. COLA DE ESTADO
- 4. I/O   │         │ (Pub/Sub)
-ARCHIVOS  │         ▼        │
-          │      ┌───────────┴─────────┐
-          │      │   SERVICIO REDIS    │ ◄─── Base de datos en memoria
-          │      │ (Cola Bull/Eventos) │
-          │      └─────────────────────┘
-          │
-          │ 5. PROCESAMIENTO
-          ▼
-   ┌──────────────┐       ┌────────────────────┐
+          │         │        │        ▲
+          │         │ 3.COLA │        │
+ 4. I/O   │         │ ESTADO │        │ 6. DESCARGAR
+ARCHIVOS  │         ▼        │        │    RESULTADO
+          │      ┌───────────┴────┤   │
+          │      │   SERVICIO     │   │
+          │      │     REDIS      │   │
+          │      └────────────────┘   │
+          │                           │
+          │ 5. PROCESAMIENTO          │
+          ▼                           │
+   ┌──────────────┐       ┌───────────┴────────┐
    │    FFMPEG    │──────►│ SISTEMA DE ARCHIVOS│ ◄─── En Docker: Volúmenes
-   │ (Subproceso) │       │ (Carpetas Locales) │ ◄─── Sin Docker: Disco Duro
+   │ (Subproceso) │◄───── │ (Carpetas Locales) │ ◄─── Sin Docker: Disco Duro
    └──────────────┘       └────────────────────┘
                               (Uploads / Outputs)
 ```
