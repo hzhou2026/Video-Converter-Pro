@@ -110,7 +110,7 @@ const ProgressBar = ({ job, onCancel, onDownload, isDownloaded }) => {
       link.download = job.outputName || `video_${job.id}.mp4`;
       document.body.appendChild(link);
       link.click();
-      document.body.childNode.remove(link);
+      link.remove();
 
       // Limpiar después de un pequeño delay
       setTimeout(() => {
