@@ -205,33 +205,35 @@ npm run dev
     Cancelar job)   │ │   Error, Completado)
                     ▼ │
    ┌───────────────────────────────────┐
-   │      SERVIDOR WEB / PROXY         │ ◄─── En Docker: Nginx
+   │      SERVIDOR WEB / PROXY         │ ◄─── En Docker: Nginx usando proxy pass
    │      (Frontend Entrypoint)        │ ◄─── Sin Docker: Vite / Localhost
    └────────────────┬──────────────────┘
                     │ ▲
                     │ │ 2. CANAL DE DATOS
-      (Proxy Pass)  │ │ (Comunicación Bidireccional)
+                    │ │  (Comunicación Bidireccional)  ◄─── Sin Docker: Disco Duro  ◄─── En Docker: Volúmenes
                     ▼ │
    ┌───────────────────────────────────┐
    │        SERVICIO BACKEND           │ ◄─── Node.js (Express + Socket.IO)
    │     (Gestor de Conversiones)      │
-   └──────┬─────────┬────────▲─────────┘
-          │         │        │        ▲
-          │         │ 3.COLA │        │
- 4. I/O   │         │ ESTADO │        │ 6. DESCARGAR
-ARCHIVOS  │         ▼        │        │    RESULTADO
-          │      ┌───────────┴────┤   │
-          │      │   SERVICIO     │   │
-          │      │     REDIS      │   │
-          │      └────────────────┘   │
-          │                           │
-          │ 5. PROCESAMIENTO          │
-          ▼                           │
-   ┌──────────────┐       ┌───────────┴────────┐
-   │    FFMPEG    │──────►│ SISTEMA DE ARCHIVOS│ ◄─── En Docker: Volúmenes
-   │ (Subproceso) │◄───── │ (Carpetas Locales) │ ◄─── Sin Docker: Disco Duro
-   └──────────────┘       └────────────────────┘
-                              (Uploads / Outputs)
+   └────┬───▲──────┬────────▲──────────┘
+        │   │      │        │        
+        │   │      │ 3.COLA │        
+ 4. I/O │   │      │ ESTADO │     
+ARCHIVOS│   │      ▼        │         
+        │   │   ┌───────────┴────┐  
+        │   │   │   SERVICIO     │   
+        │   │   │     REDIS      │   
+        │   │   └────────────────┘   
+        │   │6. DESCARGAR                        
+        │   │   RESULTADO             5. PROCESAMIENTO        
+        ▼   │                             │ 
+   ┌────────────────────────┐        ┌────┴──────────────┐
+   │ SISTEMA DE ARCHIVOS    │───────►│     FFMPEG        │
+   │ (Carpetas Locales)     │◄───────│   (Subproceso)    │
+   └────────────────────────┘        └───────────────────┘
+       (Uploads / Outputs)  
+       Sin Docker: Disco Duro 
+       En Docker: Volúmenes
 ```
 
 ## AUTOR
