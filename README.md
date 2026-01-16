@@ -1,4 +1,4 @@
-# 🎬 Video Converter Pro
+# Video Converter Pro
 
 Sistema avanzado de conversión de video con interfaz web, desarrollado como Trabajo Final de Grado.
 
@@ -12,14 +12,21 @@ Sistema avanzado de conversión de video con interfaz web, desarrollado como Tra
 - Completamente dockerizado
 - Interfaz responsive y moderna
 
-## 🐳Inicio Rápido con Docker
+---
 
-### Requisitos Previos
+## Inicio rápido con Docker
 
-- Docker 20.10+
-- Docker Compose 2.0+
-- 4GB RAM mínimo
-- 10GB espacio en disco
+### Requisitos previos
+
+- Docker 20.10 o superior
+- Docker Compose 2.0 o superior
+- 4 GB de memoria RAM (mínimo recomendado)
+- 10 GB de espacio libre en disco
+
+En caso de no disponer de Docker, puede instalarse desde la web oficial:  
+https://www.docker.com/products/docker-desktop/
+
+---
 
 ### Instalación
 
@@ -28,17 +35,62 @@ Sistema avanzado de conversión de video con interfaz web, desarrollado como Tra
 git clone https://github.com/hzhou2026/Video-Converter-Pro.git
 cd Video-Converter-Pro
 
-# 2. Copiar archivo de configuración
-cp .env.example .env
-# Edita .env y cambia los valores necesarios
-
-# 3. Iniciar con Docker
-docker compose up -d --build
-
-# 4. Acceder a la aplicación
-# Frontend: http://localhost
-# Backend API: http://localhost:3000
+# 2. Iniciar la aplicación mediante los scripts proporcionados
 ```
+
+#### Windows
+
+```bash
+# Ejecutar en CMD o PowerShell
+start.bat
+# o alternativamente
+.\start.bat
+```
+
+#### Linux
+
+```bash
+# Otorgar permisos de ejecución al script
+chmod +x start.sh
+
+# Ejecutar el script
+./start.sh
+```
+
+---
+
+### Acceso a la aplicación
+
+- Acceso local: http://localhost  
+- Acceso público: utilizar el enlace generado automáticamente en la salida de la consola (Cloudflare Tunnel)
+
+---
+
+### Ejecución manual con Docker Compose (opcional)
+
+```bash
+# En caso de no desear exposición pública mediante Cloudflare Tunnel,
+# eliminar o comentar el siguiente bloque en docker-compose.yml
+
+# ============================================
+# Cloudflare Tunnel
+# ============================================
+cloudflare-tunnel:
+  image: cloudflare/cloudflared:latest
+  container_name: video-converter-tunnel
+  restart: unless-stopped
+  command: tunnel --no-autoupdate --url http://frontend:80
+  depends_on:
+    - frontend
+  networks:
+    - video-converter-network
+```
+
+```bash
+# Construir e iniciar los contenedores manualmente
+docker compose up -d --build
+```
+
 
 ### Comandos Útiles
 
