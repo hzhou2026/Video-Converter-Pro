@@ -19,10 +19,20 @@ function App() {
   const [presets, setPresets] = useState({});
   const [formats, setFormats] = useState([]);
   const [downloadedJobs, setDownloadedJobs] = useState(new Set());
+  
+  // Estado de conexión basado en la disponibilidad de datos críticos
+  const [connectionStatus, setConnectionStatus] = useState({
+    isConnected: false,
+    isLoading: true,
+    error: null,
+    lastCheck: null
+  });
 
-  // Cargar datos iniciales
+  // Cargar datos iniciales y determinar estado de conexión
   useEffect(() => {
     const loadInitialData = async () => {
+      setConnectionStatus(prev => ({ ...prev, isLoading: true, error: null }));
+      
       try {
         const [presetsData, formatsData, jobsData] = await Promise.all([
           api.fetchPresets(),
@@ -33,13 +43,53 @@ function App() {
         setPresets(presetsData);
         setFormats(formatsData);
         setJobs(jobsData);
+        
+        // Si llegamos aquí, la conexión está OK
+        setConnectionStatus({
+          isConnected: true,
+          isLoading: false,
+          error: null,
+          lastCheck: new Date()
+        });
+        
       } catch (error) {
         console.error('Error loading initial data:', error);
+        setConnectionStatus({
+          isConnected: false,
+          isLoading: false,
+          error: error.message,
+          lastCheck: new Date()
+        });
       }
     };
 
     loadInitialData();
   }, []);
+
+  // Verificación periódica ligera (opcional, solo para detectar pérdida de conexión)
+  useEffect(() => {
+    if (!connectionStatus.isConnected) return;
+
+    const interval = setInterval(async () => {
+      try {
+        await api.fetchSystemHealth();
+        setConnectionStatus(prev => ({
+          ...prev,
+          isConnected: true,
+          lastCheck: new Date()
+        }));
+      } catch (error) {
+        console.error('Health check failed:', error);
+        setConnectionStatus(prev => ({
+          ...prev,
+          isConnected: false,
+          error: 'Conexión perdida'
+        }));
+      }
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [connectionStatus.isConnected]);
 
   // Actualizar estado de un job
   const handleJobUpdate = useCallback((updatedJob) => {
@@ -139,8 +189,21 @@ function App() {
     try {
       const jobsData = await api.fetchJobs();
       setJobs(jobsData);
+      
+      // Actualizar estado de conexión
+      setConnectionStatus(prev => ({
+        ...prev,
+        isConnected: true,
+        error: null,
+        lastCheck: new Date()
+      }));
     } catch (error) {
       console.error('Error refreshing data:', error);
+      setConnectionStatus(prev => ({
+        ...prev,
+        isConnected: false,
+        error: 'Error al actualizar'
+      }));
     }
   };
 
@@ -151,6 +214,16 @@ function App() {
 
   // Renderizar contenido de las pestañas
   const renderTabContent = () => {
+    // Mostrar pantalla de carga inicial solo en la primera carga
+    if (connectionStatus.isLoading && Object.keys(presets).length === 0) {
+      return (
+        <div className="loading-screen">
+          <div className="loading-spinner"></div>
+          <p>Conectando al servidor...</p>
+        </div>
+      );
+    }
+
     if (activeTab === 'upload') {
       return (
         <UploadForm
@@ -220,6 +293,17 @@ function App() {
     }
   };
 
+  // Determinar el estado visual de conexión
+  const getConnectionStatusClass = () => {
+    if (connectionStatus.isLoading) return 'loading';
+    return connectionStatus.isConnected ? 'healthy' : 'unhealthy';
+  };
+
+  const getConnectionStatusText = () => {
+    if (connectionStatus.isLoading) return 'Conectando...';
+    return connectionStatus.isConnected ? 'Conectado' : 'Desconectado';
+  };
+
   return (
     <div className="app">
       <header className="app-header">
@@ -230,9 +314,9 @@ function App() {
           </div>
         </div>
         <div className="system-status">
-          <div className={`status-indicator ${socket?.connected ? 'healthy' : 'unhealthy'}`}>
+          <div className={`status-indicator ${getConnectionStatusClass()}`}>
             <span className="status-dot"></span>
-            <span>{socket?.connected ? 'Conectado' : 'Desconectado'}</span>
+            <span>{getConnectionStatusText()}</span>
           </div>
         </div>
       </header>
@@ -244,6 +328,7 @@ function App() {
               key={tab.key}
               className={`nav-tab ${activeTab === tab.key ? 'active' : ''}`}
               onClick={() => setActiveTab(tab.key)}
+              disabled={!connectionStatus.isConnected}
             >
               <span className="tab-icon">{tab.icon}</span>
               {tab.label}

@@ -658,13 +658,6 @@ body {
   box-shadow: none;
 }
 
-.btn-clear {
-  padding: 16px 32px;
-  background: white;
-  color: #333;
-  border: 2px solid #e0e0e0;
-}
-
 .btn-clear:hover {
   background: #f5f5f5;
   border-color: #c0c0c0;
