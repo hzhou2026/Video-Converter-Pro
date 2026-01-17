@@ -134,9 +134,9 @@ const ProgressBar = ({ job, onCancel, onDownload, isDownloaded }) => {
   const isProcessing = job.status === 'processing';
 
   const getDownloadButtonText = () => {
-    if (isDownloading) return '⏳ Descargando...';
+    if (isDownloading) return 'Descargando...';
     if (isDownloaded) return '✓ Descargado';
-    return '📥 Descargar';
+    return 'Descargar';
   };
 
   // Renderizar componente

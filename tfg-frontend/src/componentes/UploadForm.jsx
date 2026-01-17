@@ -646,7 +646,7 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
                 opacity: (validationStatus && !validationStatus.ok && !validationStatus.valid) ? 0.5 : 1
               }}
             >
-              {isUploading ? '⏳ Procesando...' : '🚀 Iniciar Conversión'}
+              {isUploading ? 'Procesando...' : 'Iniciar Conversión'}
             </button>
             
             {selectedFile && !isUploading && (
@@ -655,7 +655,7 @@ const UploadForm = ({ presets = {}, formats = [], onJobCreated = () => {} }) => 
                 onClick={resetForm}
                 className="btn-clear"
               >
-                🗑️ Limpiar
+                Limpiar
               </button>
             )}
           </div>

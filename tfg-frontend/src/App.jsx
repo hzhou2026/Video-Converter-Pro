@@ -6,8 +6,8 @@ import { api } from './servicios/api';
 import './App.css';
 
 const TABS = [
-  { key: 'upload', label: 'Subir y Convertir', icon: '📤' },
-  { key: 'jobs', label: 'Trabajos', icon: '⚙️' },
+  { key: 'upload', label: 'Subir y Convertir'},
+  { key: 'jobs', label: 'Trabajos'},
 ];
 
 // Componente principal de la aplicación
@@ -240,10 +240,9 @@ function App() {
           <div className="jobs-header">
             <h2>Trabajos de Conversión</h2>
             <button onClick={refreshData} className="btn-refresh">
-              🔄 Actualizar
+              Actualizar
             </button>
           </div>
-
           {jobs.length === 0 ? (
             <div className="no-jobs">
               <p>No hay trabajos de conversión</p>
