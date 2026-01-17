@@ -107,7 +107,7 @@ docker compose restart
 # Ver estado
 docker compose ps
 
-# Esto borra TODO ¡Cuidado!
+# Esto borra TODO ¡Cuidado! (Usar para una detención limpia)
 docker compose down -v
 docker system prune -af
 docker volume prune -f
