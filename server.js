@@ -57,8 +57,8 @@ const cleanupConfig = {
     deleteInputAfterProcessing: true,
     deleteOutputAfterDownload: true,
     maxDownloads: 1,
-    failedJobRetention: 1800000,
-    completedJobRetention: 3600000
+    failedJobRetention: 900000,
+    completedJobRetention: 1800000
 };
 
 // ===================== TRACKING DE PROCESOS FFMPEG =====================
@@ -391,7 +391,7 @@ class CleanupManager {
     async cleanupOrphans(dirs) {
         let cleaned = 0;
         const now = Date.now();
-        const maxAge = 3600000; // 1 hora
+        const maxAge = 1800000;
 
         this.logger.info('Scanning for orphan files...');
 
@@ -2896,7 +2896,7 @@ io.on('connection', (socket) => {
                 // Si completado hace más de 5 minutos sin descargar, limpiar
                 if (job.status === 'completed') {
                     const age = Date.now() - (job.completedAt || job.createdAt);
-                    if (age > 300000) { // 5 minutos
+                    if (age > 1800000) { // 5 minutos
                         logger.info(`Cleaning abandoned completed job ${job.id}`);
                         await cleanupManager.cleanupOutput(job.id, job.outputPath);
                     }
