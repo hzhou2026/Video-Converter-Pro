@@ -34,8 +34,9 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - REDIS_URL=redis://redis:6379
-      - MAX_FILE_SIZE=2302541252
+      - MAX_FILE_SIZE=2147483648
       - MAX_CONCURRENT_JOBS=3
+      - FFMPEG_THREADS=0
       - FRONTEND_URL=http://localhost
     volumes:
       # Volúmenes persistentes para archivos
@@ -47,6 +48,14 @@ services:
         condition: service_healthy
     networks:
       - video-converter-network
+    deploy:
+      resources:
+        limits:
+          cpus: '3.5'
+          memory: 6G
+        reservations:
+          cpus: '2'
+          memory: 4G
     healthcheck:
       test:
         [
@@ -104,10 +113,6 @@ volumes:
   uploads:
     driver: local
   outputs:
-    driver: local
-  temp:
-    driver: local
-  cache:
     driver: local
 
 # ============================================

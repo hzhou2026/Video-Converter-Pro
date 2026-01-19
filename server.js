@@ -41,7 +41,7 @@ const io = new socketIO(server, {
 
 const config = {
     port: process.env.PORT || 3000,
-    maxFileSize: Number.parseInt(process.env.MAX_FILE_SIZE) || 2000 * 1024 * 1024, // 2GB
+    maxFileSize: Number.parseInt(process.env.MAX_FILE_SIZE) || 2048 * 1024 * 1024, // 2.5 GB
     maxConcurrentJobs: Number.parseInt(process.env.MAX_CONCURRENT_JOBS) || 3,
     redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
     jwtSecret: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
@@ -57,8 +57,8 @@ const cleanupConfig = {
     deleteInputAfterProcessing: true,
     deleteOutputAfterDownload: true,
     maxDownloads: 1,
-    failedJobRetention: 600000,
-    completedJobRetention: 1800000
+    failedJobRetention: 1800000,
+    completedJobRetention: 3600000
 };
 
 // ===================== TRACKING DE PROCESOS FFMPEG =====================
@@ -96,22 +96,44 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+app.use((req, res, next) => {
+    if (req.path.includes('/convert') || req.path.includes('/analyze')) {
+        req.setTimeout(3600000);
+        res.setTimeout(3600000);
+    } else {
+        req.setTimeout(120000);
+    }
+    next();
+});
+
 // Limitador de tasa
 const limiter = rateLimit({
-    windowMs: 60 * 60 * 1000, // 30 minutos
-    max: 150, // limite cada IP a 150 requests por ventana
-    message: 'Demasiadas solicitudes de esta IP, por favor intente de nuevo más tarde.'
+    windowMs: 15 * 60 * 1000, // 15 minutos
+    max: 400, // limite cada IP a 400 requests por ventana
+    message: 'Demasiadas solicitudes de esta IP, por favor intente de nuevo más tarde.',
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.path === '/api/health'
 });
 
 const uploadLimiter = rateLimit({
     windowMs: 60 * 60 * 1000, // 1 hora
-    max: 150, // limite cada IP a 20 uploads por hora
-    message: 'Límite de carga excedido, por favor intente de nuevo más tarde.'
+    max: 75, // limite cada IP a 75 uploads por hora
+    message: 'Límite de carga excedido, por favor intente de nuevo más tarde.',
+    standardHeaders: true,
+    legacyHeaders: false,
+    // Clave personalizada por IP + sesión para evitar bloqueos en refresh
+    keyGenerator: (req) => {
+        const sessionId = req.headers['x-session-id'];
+        return `${req.ip}-${sessionId || 'anonymous'}`;
+    }
 });
 
-app.use('/api/', limiter);
+// Aplicar limiters de forma simple
+app.use('/api/health', (req, res, next) => next());
 app.use('/api/convert', uploadLimiter);
 app.use('/api/batch-convert', uploadLimiter);
+app.use('/api/', limiter);
 
 // ===================== DIRECTORIOS =====================
 
@@ -688,56 +710,85 @@ const PRESETS = {
     'h264-ultra': {
         videoCodec: 'libx264',
         audioCodec: 'aac',
-        crf: 15,
-        preset: 'veryslow',
-        audioBitrate: '320k',
-        description: 'Máxima calidad',
-        allowCustomOptions: true
+        crf: 18,
+        preset: 'medium',
+        audioBitrate: '256k',
+        description: 'Calidad premium (archivos grandes)',
+        extraOptions: [
+            '-movflags', '+faststart',
+            '-pix_fmt', 'yuv420p'
+        ],
+        allowCustomOptions: true,
     },
+
     'h264-high': {
         videoCodec: 'libx264',
         audioCodec: 'aac',
-        crf: 18,
-        preset: 'slow',
-        audioBitrate: '256k',
-        description: 'Calidad',
+        crf: 20,
+        preset: 'medium',
+        audioBitrate: '192k',
+        description: 'Alta calidad (recomendado)',
+        extraOptions: [
+            '-movflags', '+faststart',
+            '-pix_fmt', 'yuv420p'
+        ],
         allowCustomOptions: true
     },
+
     'h264-normal': {
         videoCodec: 'libx264',
         audioCodec: 'aac',
         crf: 23,
         preset: 'medium',
-        audioBitrate: '192k',
-        description: 'Balance ideal',
+        audioBitrate: '128k',
+        description: 'Balance óptimo calidad/tamaño',
+        extraOptions: [
+            '-movflags', '+faststart',
+            '-pix_fmt', 'yuv420p'
+        ],
         allowCustomOptions: true
     },
+
     'h264-fast': {
         videoCodec: 'libx264',
         audioCodec: 'aac',
-        crf: 28,
-        preset: 'fast',
+        crf: 26,
+        preset: 'veryfast',
         audioBitrate: '128k',
-        description: 'Menor calidad pero más rápido',
+        description: 'Conversión rápida',
+        extraOptions: [
+            '-movflags', '+faststart',
+            '-pix_fmt', 'yuv420p'
+        ],
         allowCustomOptions: true
     },
 
     'h265-high': {
         videoCodec: 'libx265',
         audioCodec: 'aac',
-        crf: 24,
+        crf: 26,
         preset: 'medium',
-        audioBitrate: '192k',
+        audioBitrate: '128k',
         description: '50% menos tamaño que H.264',
+        extraOptions: [
+            '-movflags', '+faststart',
+            '-pix_fmt', 'yuv420p',
+            '-x265-params', 'log-level=error'
+        ],
         allowCustomOptions: true
     },
+
     'h265-normal': {
         videoCodec: 'libx265',
         audioCodec: 'aac',
         crf: 28,
         preset: 'medium',
         audioBitrate: '128k',
-        description: 'Mejor compresión que H.264',
+        description: 'Excelente compresión',
+        extraOptions: [
+            '-movflags', '+faststart',
+            '-pix_fmt', 'yuv420p'
+        ],
         allowCustomOptions: true
     },
 
@@ -781,7 +832,7 @@ const PRESETS = {
         extraOptions: [
             '-b:v', '0',
             '-tile-columns', '2',
-            '-threads', '4',
+            '-threads', '5',
             '-row-mt', '1'
         ],
         allowCustomOptions: true
@@ -823,24 +874,27 @@ const PRESETS = {
     'mobile-optimized': {
         videoCodec: 'libx264',
         audioCodec: 'aac',
-        crf: 28,
-        preset: 'fast',
+        crf: 26,
+        preset: 'medium',
         audioBitrate: '96k',
-        resolution: '720x?',
+        resolution: '854x?',
         description: 'Optimizado para Móviles',
         extraOptions: ['-profile:v', 'baseline', '-level', '3.0'],
         allowCustomOptions: true
     },
 
     'gif-animated': {
-        description: 'Para clips cortos',
+        videoCodec: 'gif',
+        audioCodec: null,
+        description: 'GIF optimizado (clips cortos)',
         outputFormat: 'gif',
-        fps: 10,
+        fps: 15,
         resolution: '480x?',
         extraOptions: [
-            '-vf', 'fps=10,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse'
+            '-vf', 
+            'fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5'
         ],
-        allowCustomOptions: true
+        allowCustomOptions: false,
     },
 
     // ========== REDES SOCIALES ==========
@@ -848,23 +902,31 @@ const PRESETS = {
     'youtube-4k': {
         videoCodec: 'libx264',
         audioCodec: 'aac',
-        crf: 18,
+        crf: 17,
         preset: 'slow',
         audioBitrate: '256k',
         resolution: '3840x2160',
-        fps: 30,
+        fps: 60,
         description: '(3840x2160)',
-        extraOptions: ['-movflags', '+faststart', '-pix_fmt', 'yuv420p'],
+        extraOptions: [
+            '-movflags', '+faststart',
+            '-pix_fmt', 'yuv420p',
+            '-b:v', '40M',
+            '-maxrate', '53M',
+            '-bufsize', '106M',
+            '-profile:v', 'high',
+            '-level', '5.1'
+        ],
         allowCustomOptions: true
     },
     'youtube-1080p': {
         videoCodec: 'libx264',
         audioCodec: 'aac',
-        crf: 23,
+        crf: 21,
         preset: 'medium',
         audioBitrate: '192k',
         resolution: '1920x1080',
-        fps: 30,
+        fps: 60,
         description: '(Full HD)',
         extraOptions: ['-movflags', '+faststart', '-pix_fmt', 'yuv420p'],
         allowCustomOptions: true
@@ -891,9 +953,15 @@ const PRESETS = {
         audioBitrate: '128k',
         resolution: '1080x1920',
         fps: 30,
-        maxDuration: 90,
-        description: '(9:16 vertical)',
-        extraOptions: ['-movflags', '+faststart'],
+        maxDuration: 900,
+        description: 'Instagram Reels (9:16)',
+        extraOptions: [
+            '-movflags', '+faststart',
+            '-pix_fmt', 'yuv420p',
+            '-b:v', '5M',
+            '-maxrate', '7M',
+            '-bufsize', '10M'
+        ],
         allowCustomOptions: true
     },
 
@@ -934,7 +1002,7 @@ const PRESETS = {
         extraOptions: [
             '-profile:v', '3',
             '-pix_fmt', 'yuv422p10le',
-            '-vendor', 'apl0'
+            '-vendor', 'ap10'
         ],
         allowCustomOptions: false
     },
@@ -1792,9 +1860,8 @@ async function getValidatedDuration(inputPath, startTime, duration, jobId) {
 // Validar presets raw para duración máxima
 async function validateRawPreset(preset, duration) {
     const rawPresets = [
-        'raw-uncompressed',
-        'avi-uncompressed',
-        'avi-uncompressed-rgb'
+        "avi-raw-uncompressed",
+        "avi-raw-rgb"
     ];
 
     if (rawPresets.includes(preset)) {
@@ -2329,7 +2396,7 @@ app.post('/api/batch-convert', upload.array('videos', 10), async (req, res) => {
             const inputPath = file.path;
             const outputFilename = `${path.parse(file.filename).name}_converted.${options.format || 'mp4'}`;
             const outputPath = path.join(dirs.outputs, outputFilename);
-            
+
             const job = jobManager.createJob({
                 type: 'batch-conversion',
                 inputPath,
@@ -2477,7 +2544,7 @@ app.get('/api/download/:jobId', async (req, res) => {
         logger.info(`Starting download for job ${job.id}`);
 
         const fileStats = await fs.stat(job.outputPath);
-        
+
         // Configurar headers
         res.setHeader('Content-Disposition', `attachment; filename="${job.outputName}"`);
         res.setHeader('Content-Type', 'application/octet-stream');
@@ -2500,13 +2567,13 @@ app.get('/api/download/:jobId', async (req, res) => {
         // Cuando el response termina
         res.on('finish', () => {
             if (streamError) return;
-            
+
             downloadCompleted = true;
             logger.info(`Download finished for job ${job.id}. Bytes sent: ${bytesSent}/${fileStats.size}`);
-            
+
             // Verificar que se enviaron todos los bytes
             const downloadSuccess = bytesSent === fileStats.size;
-            
+
             if (!downloadSuccess) {
                 logger.warn(`Incomplete download for job ${job.id}: ${bytesSent}/${fileStats.size} bytes`);
                 jobManager.updateJob(job.id, { isDownloading: false });
@@ -2545,12 +2612,12 @@ app.get('/api/download/:jobId', async (req, res) => {
 
     } catch (error) {
         logger.error('Download error:', error);
-        
+
         const job = jobManager.getJob(req.params.jobId);
         if (job) {
             jobManager.updateJob(job.id, { isDownloading: false });
         }
-        
+
         if (!res.headersSent) {
             res.status(500).json({ error: 'Failed to download file', details: error.message });
         }
