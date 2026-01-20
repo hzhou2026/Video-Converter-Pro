@@ -7,28 +7,28 @@ const BASE_URL = isDevelopment
 
 // Función para generar UUID compatible
 const generateUUID = () => {
-    // Intentar usar crypto.randomUUID si está disponible
-    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-        return crypto.randomUUID();
-    }
-    
-    // Fallback: generar UUID manualmente
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replaceAll(/[xy]/g, (c) => {
-        const r = Math.trunc(Math.random() * 16);
-        const v = c === 'x' ? r : (r & 0x3) | 0x8;
-        return v.toString(16);
-    });
+  // Intentar usar crypto.randomUUID si está disponible
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+
+  // Fallback: generar UUID manualmente
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replaceAll(/[xy]/g, (c) => {
+    const r = Math.trunc(Math.random() * 16);
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 };
 
 // Obtener o generar sessionId
 const getSessionId = () => {
-    let sessionId = localStorage.getItem('sessionId');
-    if (!sessionId) {
-        sessionId = generateUUID();
-        localStorage.setItem('sessionId', sessionId);
-        console.log('🆔 New sessionId generated:', sessionId);
-    }
-    return sessionId;
+  let sessionId = localStorage.getItem('sessionId');
+  if (!sessionId) {
+    sessionId = generateUUID();
+    localStorage.setItem('sessionId', sessionId);
+    console.log('🆔 New sessionId generated:', sessionId);
+  }
+  return sessionId;
 };
 
 // Manejar respuestas de la API
@@ -133,15 +133,26 @@ export const api = {
       const formData = new FormData();
       formData.append('media', file);
       const url = `${BASE_URL}/api/analyze`;
+      
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 600000); // 5 minutos
+
       const response = await fetch(url, {
         method: 'POST',
         headers: {
           'x-session-id': sessionId
         },
-        body: formData
+        body: formData,
+        signal: controller.signal
       });
+
+      clearTimeout(timeoutId);
       return handleResponse(response);
+
     } catch (error) {
+      if (error.name === 'AbortError') {
+        throw new Error('El análisis tardó demasiado tiempo. Intenta con un archivo más pequeño o continúa sin análisis.');
+      }
       console.error('API Error (analyzeFile):', error);
       throw error;
     }

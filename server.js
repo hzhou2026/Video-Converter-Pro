@@ -2224,6 +2224,12 @@ app.get('/api/job/:jobId', async (req, res) => {
     }
 });
 
+app.use('/api/analyze', (req, res, next) => {
+  req.setTimeout(600000);
+  res.setTimeout(600000);
+  next();
+});
+
 // Análisis de archivo multimedia
 app.post('/api/analyze', upload.single('media'), async (req, res) => {
     try {
