@@ -64,6 +64,8 @@ chmod +x start.sh
 - Acceso local: http://localhost  
 - Acceso público: utilizar el enlace generado automáticamente en la salida de la consola (Cloudflare Tunnel)
 
+- **En local cualquier tamaño según el usuario y en público como maximo 100mb limitacioens de cloudflare tunnel.**
+
 ---
 
 ### Ejecución manual con Docker Compose (opcional)
