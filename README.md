@@ -64,7 +64,7 @@ chmod +x start.sh
 - Acceso local: http://localhost  
 - Acceso público: utilizar el enlace generado automáticamente en la salida de la consola (Cloudflare Tunnel)
 
-- **En local el tamaño maximo del archivo es el asignado por el usuario (en este acaso por defecto es 2gb)
+- **En local el tamaño máximo del archivo es el asignado por el usuario (Por defecto 2Gb)
 y en red de cloudflare el archivo no puede superar los 100Mb**
 
 ---
