@@ -62,6 +62,7 @@ chmod +x start.sh
 ### Acceso a la aplicación
 
 - Acceso local: http://localhost  
+- Acceso desde una misma red: http://LOCAL_IP"
 - Acceso público: utilizar el enlace generado automáticamente en la salida de la consola (Cloudflare Tunnel)
 
 - **En local el tamaño máximo del archivo es el asignado por el usuario (Por defecto 2Gb)
