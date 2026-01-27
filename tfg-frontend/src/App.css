@@ -80,6 +80,11 @@ body {
   width: 10px;
   height: 10px;
   border-radius: 50%;
+  transform: translateZ(0); 
+  will-change: transform, opacity;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  
   animation: pulse 2s ease-in-out infinite;
 }
 
@@ -105,16 +110,13 @@ body {
 }
 
 @keyframes pulse-connecting {
-
-  0%,
-  100% {
+  0%, 100% {
     opacity: 1;
-    transform: scale(1);
+    transform: scale(1) translateZ(0);
   }
-
   50% {
-    opacity: 0.5;
-    transform: scale(0.9);
+    opacity: 0.6;
+    transform: scale(0.95) translateZ(0);
   }
 }
 
@@ -1006,10 +1008,12 @@ body {
   }
 
   .status-indicator {
-    width: 100%;
-    justify-content: center;
     padding: 6px 12px;
     font-size: 13px;
+    width: fit-content;
+    margin: 0 auto;
+    display: inline-flex;
+    justify-content: flex-start;
   }
 
   .status-dot {
