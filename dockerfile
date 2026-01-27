@@ -20,17 +20,17 @@ RUN npm ci --only=production
 # ============================================
 FROM node:20-alpine
 
-# Instalar FFmpeg en la imagen final
-RUN apk add --no-cache ffmpeg
-
-# Crear usuario no-root para seguridad
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
-
-# Crear directorios necesarios
-WORKDIR /app
-RUN mkdir -p uploads outputs && \
+# Instalar FFmpeg en la imagen final y configuraciones iniciales
+RUN apk add --no-cache ffmpeg && \
+    # Crear usuario no-root para seguridad
+    addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001 && \
+    # Crear directorios necesarios
+    mkdir -p /app/uploads /app/outputs && \
     chown -R nodejs:nodejs /app
+
+# Establecer directorio de trabajo
+WORKDIR /app
 
 # Copiar dependencias desde builder
 COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
