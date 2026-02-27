@@ -42,7 +42,6 @@ services:
       # Volúmenes persistentes para archivos
       - uploads:/app/uploads
       - outputs:/app/outputs
-      - ./compatibilidad.js:/app/compatibilidad.js:ro
     depends_on:
       redis:
         condition: service_healthy
