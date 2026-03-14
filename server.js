@@ -793,21 +793,32 @@ const PRESETS = {
     },
 
     'av1-high': {
-        videoCodec: 'libaom-av1',
+        videoCodec: 'libsvtav1',
         audioCodec: 'opus',
         crf: 28,
-        preset: 6,
         audioBitrate: '192k',
         description: 'Mejor compresión moderna',
+        extraOptions: [
+            '-preset', '6',
+            '-b:v', '0',
+            '-g', '240',
+            '-pix_fmt', 'yuv420p'
+        ],
         allowCustomOptions: true
     },
+
     'av1-normal': {
-        videoCodec: 'libaom-av1',
+        videoCodec: 'libsvtav1',
         audioCodec: 'opus',
-        crf: 30,
-        preset: 6,
+        crf: 32,
         audioBitrate: '128k',
         description: 'Codec del futuro',
+        extraOptions: [
+            '-preset', '8',
+            '-b:v', '0',
+            '-g', '240',
+            '-pix_fmt', 'yuv420p'
+        ],
         allowCustomOptions: true
     },
 
@@ -815,9 +826,14 @@ const PRESETS = {
         videoCodec: 'libvpx-vp9',
         audioCodec: 'opus',
         crf: 31,
-        preset: 'good',
         audioBitrate: '128k',
         description: 'Compatible con navegadores',
+        extraOptions: [
+            '-b:v', '0',
+            '-deadline', 'good',
+            '-cpu-used', '2',
+            '-row-mt', '1'
+        ],
         allowCustomOptions: true
     },
 
@@ -825,12 +841,13 @@ const PRESETS = {
         videoCodec: 'libvpx-vp9',
         audioCodec: 'opus',
         crf: 31,
-        preset: 'good',
         audioBitrate: '128k',
         outputFormat: 'webm',
         description: 'Formato web moderno',
         extraOptions: [
             '-b:v', '0',
+            '-deadline', 'good',
+            '-cpu-used', '2',
             '-tile-columns', '2',
             '-threads', '5',
             '-row-mt', '1'
@@ -879,7 +896,7 @@ const PRESETS = {
         audioBitrate: '96k',
         resolution: '854x?',
         description: 'Optimizado para Móviles',
-        extraOptions: ['-profile:v', 'baseline', '-level', '3.0'],
+        extraOptions: ['-movflags', '+faststart', '-profile:v', 'baseline', '-level', '3.0'],
         allowCustomOptions: true
     },
 
@@ -888,10 +905,8 @@ const PRESETS = {
         audioCodec: null,
         description: 'GIF optimizado (clips cortos)',
         outputFormat: 'gif',
-        fps: 15,
-        resolution: '480x?',
         extraOptions: [
-            '-vf', 
+            '-vf',
             'fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5'
         ],
         allowCustomOptions: false,
@@ -938,20 +953,23 @@ const PRESETS = {
         crf: 23,
         preset: 'medium',
         audioBitrate: '128k',
-        resolution: '1080x1080',
         fps: 30,
         maxDuration: 60,
-        description: '(1:1 cuadrado)',
-        extraOptions: ['-movflags', '+faststart'],
+        description: 'Post cuadrado de Instagram (1:1)',
+        extraOptions: [
+            '-movflags', '+faststart',
+            '-pix_fmt', 'yuv420p',
+            '-vf', 'scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2:black'
+        ],
         allowCustomOptions: true
     },
+    
     'instagram-reel': {
         videoCodec: 'libx264',
         audioCodec: 'aac',
         crf: 23,
         preset: 'medium',
         audioBitrate: '128k',
-        resolution: '1080x1920',
         fps: 30,
         maxDuration: 900,
         description: 'Instagram Reels (9:16)',
@@ -960,7 +978,8 @@ const PRESETS = {
             '-pix_fmt', 'yuv420p',
             '-b:v', '5M',
             '-maxrate', '7M',
-            '-bufsize', '10M'
+            '-bufsize', '10M',
+            '-vf', 'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black'
         ],
         allowCustomOptions: true
     },
@@ -971,11 +990,14 @@ const PRESETS = {
         crf: 23,
         preset: 'medium',
         audioBitrate: '128k',
-        resolution: '1080x1920',
         fps: 30,
         maxDuration: 180,
-        description: '(9:16 vertical)',
-        extraOptions: ['-movflags', '+faststart'],
+        description: 'TikTok (9:16 vertical)',
+        extraOptions: [
+            '-movflags', '+faststart',
+            '-pix_fmt', 'yuv420p',
+            '-vf', 'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black'
+        ],
         allowCustomOptions: true
     },
 
@@ -2225,9 +2247,9 @@ app.get('/api/job/:jobId', async (req, res) => {
 });
 
 app.use('/api/analyze', (req, res, next) => {
-  req.setTimeout(600000);
-  res.setTimeout(600000);
-  next();
+    req.setTimeout(600000);
+    res.setTimeout(600000);
+    next();
 });
 
 // Análisis de archivo multimedia

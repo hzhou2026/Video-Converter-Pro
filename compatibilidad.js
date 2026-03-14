@@ -61,15 +61,15 @@ const PRESET_FORMAT_COMPATIBILITY = {
 // Códecs compatibles por formato
 const FORMAT_CODEC_COMPATIBILITY = {
   'mp4': {
-    video: ['libx264', 'libx265', 'mpeg4', 'libaom-av1'],
+    video: ['libx264', 'libx265', 'mpeg4', 'libsvtav1'],
     audio: ['aac', 'mp3', 'ac3', 'opus']
   },
   'mkv': {
-    video: ['libx264', 'libx265', 'libvpx-vp9', 'libaom-av1', 'mpeg4', 'ffv1'],
+    video: ['libx264', 'libx265', 'libvpx-vp9', 'libsvtav1', 'mpeg4', 'ffv1'],
     audio: ['aac', 'mp3', 'opus', 'vorbis', 'flac', 'pcm_s16le', 'ac3']
   },
   'webm': {
-    video: ['libvpx', 'libvpx-vp9', 'libaom-av1'],
+    video: ['libvpx', 'libvpx-vp9', 'libsvtav1'],
     audio: ['opus', 'vorbis']
   },
   'avi': {
@@ -179,10 +179,10 @@ function validateConversionCompatibility(preset, format, presetConfig) {
   // WebM requiere códecs específicos
   if (format === 'webm') {
     if (presetConfig.videoCodec && 
-        !['libvpx', 'libvpx-vp9', 'libaom-av1'].includes(presetConfig.videoCodec)) {
+        !['libvpx', 'libvpx-vp9', 'libsvtav1'].includes(presetConfig.videoCodec)) {
       return {
         valid: false,
-        message: `WebM requiere códec de video VP8 (libvpx), VP9 (libvpx-vp9) o AV1 (libaom-av1). "${presetConfig.videoCodec}" no es compatible.`
+        message: `WebM requiere códec de video VP8 (libvpx), VP9 (libvpx-vp9) o AV1 (libsvtav1). "${presetConfig.videoCodec}" no es compatible.`
       };
     }
     
@@ -257,7 +257,7 @@ function applyOutputFormat(command, preset, format, presetConfig) {
     case 'webm':
       // Si no tiene códecs WebM definidos, aplicar por defecto
       if (!presetConfig.videoCodec || 
-          !['libvpx', 'libvpx-vp9', 'libaom-av1'].includes(presetConfig.videoCodec)) {
+          !['libvpx', 'libvpx-vp9', 'libsvtav1'].includes(presetConfig.videoCodec)) {
         command.videoCodec('libvpx-vp9');
         command.outputOptions(['-crf', '31', '-b:v', '0']);
       }
